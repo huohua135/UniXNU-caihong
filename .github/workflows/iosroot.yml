@@ -25,6 +25,9 @@ on:
       gui_seed:
         description: 'iOS 16 GUI seed (migration plist + containers, as UniXNU-Ace5 ios16_gui_seed.py)'
         default: 'false'
+      gui_full:
+        description: 'iOS 16 GUI startup compat + skip Setup (UniXNU-Ace5 ios16_startup_compat.py + ios16_setup.py)'
+        default: 'false'
 
 jobs:
   build:
@@ -141,6 +144,60 @@ jobs:
               os.chown(pref, 501, 501)
               os.chmod(pref, 0o600)
           print('seeded', build)
+          PY
+
+      - name: GUI startup compatibility and Setup skip (UniXNU-Ace5)
+        if: ${{ inputs.gui_full == 'true' }}
+        run: |
+          set -euxo pipefail
+          sudo python3 - /Volumes/iOSRoot <<'PY'
+          import os, plistlib, shutil, sys
+          R = sys.argv[1]
+          def rd(p): return plistlib.load(open(R + p, 'rb'))
+          def wr(p, v, uid=None, mode=None):
+              with open(R + p, 'wb') as f: plistlib.dump(v, f, fmt=plistlib.FMT_BINARY, sort_keys=False)
+              if uid is not None: os.chown(R + p, uid, uid)
+              if mode is not None: os.chmod(R + p, mode)
+          assert not os.path.exists(R + '/private/var/datamigrator/migrate'), 'active migration'
+          # 1. No modem: drop the CommCenter jobs from the launchd cache.
+          L = '/System/Library/xpc/launchd.plist'
+          launchd = rd(L); jobs = launchd['LaunchDaemons']
+          for n in ('com.apple.CommCenter', 'com.apple.CommCenter-noncellular',
+                    'com.apple.CommCenterRootHelper', 'com.apple.CommCenterMobileHelper'):
+              k = '/System/Library/LaunchDaemons/' + n + '.plist'
+              print('disable', k, jobs.pop(k, None) is not None)
+          wr(L, launchd)
+          # 2. No audio hardware: no recorder server, VirtualAudio HAL plugin moved aside.
+          for x in ('D22', 'D221', 'Default'):
+              m = '/System/Library/Frameworks/MediaToolbox.framework/%s/SubServerConfiguration.plist' % x
+              if os.path.exists(R + m):
+                  v = rd(m); v['StartRecorderServer'] = False; wr(m, v); print('recorder off', x)
+          va = '/Library/Audio/Plug-Ins/HAL/VirtualAudio.plugin'
+          if os.path.exists(R + va):
+              os.makedirs(R + '/Library/Audio/Plug-Ins/HAL.disabled', exist_ok=True)
+              shutil.move(R + va, R + '/Library/Audio/Plug-Ins/HAL.disabled/VirtualAudio.plugin'); print('VirtualAudio moved')
+          # 3. Preferences: SpringBoard watchdogs off + Setup marked complete.
+          P = '/private/var/mobile/Library/Preferences/'
+          for d in ('/private/var/mobile/Library', P[:-1]):
+              os.makedirs(R + d, exist_ok=True); os.chown(R + d, 501, 501)
+          prefs = {
+              'com.apple.springboard': {'BKNoWatchdogs': True,
+                  'FBLaunchWatchdogExceptions': {'com.apple.purplebuddy': 100},
+                  'MCForceShowCloudConfigurationUI': False},
+              'com.apple.purplebuddy': {'SetupDone': True, 'SetupFinishedAllSteps': True,
+                  'SetupVersion': 11, 'daemonizeNeedsToRun': False},
+              'com.apple.purplebuddy.notbackedup': {k: False for k in (
+                  'ShouldRunDiagnosticsMiniBuddy', 'ShouldRunHSA2MiniBuddy', 'ShouldRunKeychainSyncMiniBuddy',
+                  'ShouldRunMesaMiniBuddy', 'ShouldRunPaymentMiniBuddy', 'ShouldRunStandardMiniBuddy',
+                  'SilentICDPUpgrade')},
+              'com.apple.managedconfiguration.notbackedup': {
+                  'LockdownActivationIndicatesCloudConfigurationAvailable': False},
+          }
+          for dom, vals in prefs.items():
+              p = P + dom + '.plist'
+              cur = rd(p) if os.path.exists(R + p) else {}
+              cur.update(vals); wr(p, cur, 501, 0o600); print('pref', dom)
+          print('gui_full done')
           PY
 
       - name: Report the volume identity
