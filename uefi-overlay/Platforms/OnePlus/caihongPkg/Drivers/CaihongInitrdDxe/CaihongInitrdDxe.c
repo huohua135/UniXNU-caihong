@@ -207,7 +207,7 @@ Mark (
   Gop->Blt (Gop, &Pixel, EfiBltVideoFill, 0, 0, 0, 0, 600, 100, 0);
 
   // Hold the colour long enough to be read from a photo of the panel.
-  gBS->Stall (2500000);
+  gBS->Stall (500000);
 }
 
 //
@@ -383,34 +383,49 @@ InstallVolume (
 STATIC
 UINT64
 VolumeSizeAt (
-  IN UINT8   *Sector,
-  IN UINT64  Limit
+  IN UINT8    *Sector,
+  IN UINT64   Limit,
+  IN BOOLEAN  IsFirstSector
   )
 {
   UINT64  Bytes;
 
   if (Limit < RAM_BLOCK_SIZE) {
+    if (IsFirstSector) Mark (255, 0, 128); // hot pink: limit < 512
     return 0;
   }
 
   if ((Sector[510] != 0x55) || (Sector[511] != 0xAA)) {
+    if (IsFirstSector) Mark (255, 128, 128); // salmon: boot magic not 55 AA
     return 0;
   }
 
   if (ReadUnaligned16 ((CONST UINT16 *)(Sector + 11)) != RAM_BLOCK_SIZE) {
+    if (IsFirstSector) Mark (128, 255, 128); // light green: sector size not 512
     return 0;
   }
 
   if (CompareMem (Sector + FAT_LABEL_OFF, mLabel, FAT_LABEL_LEN) != 0) {
+    if (IsFirstSector) Mark (128, 128, 255); // light blue: label mismatch
     return 0;
   }
 
   if (CompareMem (Sector + FAT_TYPE_OFF, mFat16, sizeof (mFat16)) != 0) {
+    if (IsFirstSector) Mark (255, 255, 128); // light yellow: type mismatch
     return 0;
   }
 
   Bytes = (UINT64)ReadUnaligned32 ((CONST UINT32 *)(Sector + FAT_SECTORS_OFF)) * RAM_BLOCK_SIZE;
-  if ((Bytes == 0) || (Bytes > Limit)) {
+  if (Bytes == 0) {
+    Bytes = (UINT64)ReadUnaligned16 ((CONST UINT16 *)(Sector + 19)) * RAM_BLOCK_SIZE;
+  }
+
+  if (Bytes == 0) {
+    if (IsFirstSector) Mark (128, 255, 255); // cyan: sector count zero
+    return 0;
+  }
+
+  if (Bytes > Limit) {
     return 0;
   }
 
@@ -424,15 +439,18 @@ FindVolume (
   IN UINT64  End
   )
 {
-  UINT64  At;
-  UINT64  Bytes;
+  UINT64   At;
+  UINT64   Bytes;
+  BOOLEAN  First;
 
   if (End <= Start) {
     return EFI_NOT_FOUND;
   }
 
+  First = TRUE;
   for (At = ALIGN_VALUE (Start, RAM_BLOCK_SIZE); At + RAM_BLOCK_SIZE <= End; At += RAM_BLOCK_SIZE) {
-    Bytes = VolumeSizeAt ((UINT8 *)(UINTN)At, End - At);
+    Bytes = VolumeSizeAt ((UINT8 *)(UINTN)At, End - At, First);
+    First = FALSE;
     if (Bytes != 0) {
       return InstallVolume (At, Bytes);
     }
@@ -653,10 +671,14 @@ CaihongInitrdDxeEntry (
           if (End <= Start) {
             Mark (255, 255, 255); // white: the range is empty or inverted
           } else {
-            // The bootloader put the ramdisk here, so the range is real memory
-            // even when the firmware memory map does not describe it.
+            ShowValue (End - Start, 740);
+            if (RangeIsBacked (Map, Size, DescriptorSize, Start, RAM_BLOCK_SIZE)) {
+              ShowValue (*(CONST UINT64 *)(UINTN)Start, 860);
+              ShowValue ((UINT64)*(CONST UINT16 *)(UINTN)(Start + 510), 980);
+            }
             Mark (0, 255, 0);  // green: looking for the volume
             if (!EFI_ERROR (FindVolume (Start, End))) {
+              Mark (0, 255, 0);  // green: volume successfully installed!
               FreePool (Map);
               return EFI_SUCCESS;
             }
@@ -668,6 +690,6 @@ CaihongInitrdDxeEntry (
   }
 
   FreePool (Map);
-  gBS->Stall (8000000);
+  gBS->Stall (1000000);
   return EFI_NOT_FOUND;
 }

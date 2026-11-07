@@ -82,6 +82,8 @@ roots = [
   "com.apple.driver.ApplePMGR",
   "com.apple.driver.IODARTFamily",
   "com.apple.filesystems.apfs",
+  # HFS+ root (Variant B): the stock iOS 17 kernelcache carries it, the prelink left it out.
+  "com.apple.filesystems.hfs.kext",
   "com.apple.iokit.CoreAnalyticsFamily",
   "com.apple.iokit.IOAVFamily",
   "com.apple.iokit.IOAudio2Family",
@@ -133,7 +135,7 @@ loader = "firmware"                # DarwinBoot lives in the firmware volume
 title = "OnePlus Pad Pro (caihong)"
 dram_size = "0x80000000"           # handoff window, not installed RAM
 panic_screen = true
-timeout = 3
+timeout = 0                        # README: the menu timer stalls; 0 boots the default at once
 kernel_args = ["-v", "serial=3"]
 
 [payload.adt]
