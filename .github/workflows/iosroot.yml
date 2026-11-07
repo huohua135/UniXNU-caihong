@@ -233,4 +233,5 @@ jobs:
             root.img.gz
             volume-uuid.txt
           compression-level: 0
+          retention-days: 30
           retention-days: 3
