@@ -22,6 +22,9 @@ on:
       sysos_dmg:
         description: Cryptex1,SystemOS member (with ipsw_url)
         default: ''
+      gui_seed:
+        description: 'iOS 16 GUI seed (migration plist + containers, as UniXNU-Ace5 ios16_gui_seed.py)'
+        default: 'false'
 
 jobs:
   build:
@@ -112,6 +115,33 @@ jobs:
           for d in System usr bin sbin Applications Library private/preboot; do
             sudo chown -R 0:0 "$R/$d" || true
           done
+
+      - name: Seed a fresh root for the GUI (UniXNU-Ace5 ios16_gui_seed.py)
+        if: ${{ inputs.gui_seed == 'true' }}
+        run: |
+          set -euxo pipefail
+          sudo python3 - /Volumes/iOSRoot <<'PY'
+          import os, plistlib, sys
+          R = sys.argv[1]
+          build = plistlib.load(open(R + '/System/Library/CoreServices/SystemVersion.plist', 'rb'))['ProductBuildVersion']
+          assert not os.path.exists(R + '/private/var/datamigrator/migrate'), 'active migration sentinel'
+          for path, uid in (('/private/var/containers', 0), ('/private/var/containers/Bundle', 33),
+                            ('/private/var/containers/Data', 0), ('/private/var/containers/Data/System', 0),
+                            ('/private/var/containers/Shared', 0), ('/private/var/containers/Shared/SystemGroup', 0),
+                            ('/private/var/containers/Temp', 0),
+                            ('/private/var/mobile/Library', 501), ('/private/var/mobile/Library/Preferences', 501)):
+              os.makedirs(R + path, exist_ok=True)
+              os.chown(R + path, uid, uid)
+          pref = R + '/private/var/mobile/Library/Preferences/com.apple.migration.plist'
+          wanted = {'LastSystemVersion': build,
+                    'DMUserDataDisposition': {'SyntheticDidUpgrade': False, 'buildVersion': build}}
+          if not os.path.exists(pref):
+              with open(pref, 'wb') as f:
+                  plistlib.dump(wanted, f, fmt=plistlib.FMT_BINARY)
+              os.chown(pref, 501, 501)
+              os.chmod(pref, 0o600)
+          print('seeded', build)
+          PY
 
       - name: Report the volume identity
         run: |
