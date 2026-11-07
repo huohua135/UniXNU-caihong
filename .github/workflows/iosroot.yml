@@ -13,6 +13,15 @@ on:
       size_gib:
         description: image size in GiB
         default: '16'
+      ipsw_url:
+        description: IPSW URL (empty = pinned iPadOS 17.7.11)
+        default: ''
+      os_dmg:
+        description: OS member (with ipsw_url)
+        default: ''
+      sysos_dmg:
+        description: Cryptex1,SystemOS member (with ipsw_url)
+        default: ''
 
 jobs:
   build:
@@ -27,27 +36,34 @@ jobs:
       - name: Download the pinned IPSW
         run: |
           set -euxo pipefail
-          curl -L --retry 3 -o ipsw.zip \
-            "https://updates.cdn-apple.com/2025SpringFCS/fullrestores/122-77166/DCA6CFE8-90E9-4B92-880D-3DE171798E40/iPad_Pro_HFR_17.7.11_21H461_Restore.ipsw"
+          url="${{ inputs.ipsw_url }}"
+          [ -n "$url" ] || url="https://updates.cdn-apple.com/2025SpringFCS/fullrestores/122-77166/DCA6CFE8-90E9-4B92-880D-3DE171798E40/iPad_Pro_HFR_17.7.11_21H461_Restore.ipsw"
+          curl -L --retry 3 -o ipsw.zip "$url"
           ls -lh ipsw.zip
 
       - name: Extract the OS and SystemOS members
         run: |
           set -euxo pipefail
           mkdir -p dmg
-          unzip -o -j ipsw.zip '044-76040-038.dmg' '044-76034-038.dmg' -d dmg
+          OS="${{ inputs.os_dmg }}"; SYS="${{ inputs.sysos_dmg }}"
+          if [ -z "${{ inputs.ipsw_url }}" ]; then
+            OS=044-76040-038.dmg; SYS=044-76034-038.dmg
+            unzip -o -j ipsw.zip "$OS" "$SYS" -d dmg
+            echo "3f99b859c9728379110b66657c7b15285bcb1925ad8b5726542e2cdcf8b1028d  dmg/$OS" | shasum -a 256 -c -
+            echo "b4908cde41d23e6bc05e6af51a2c9eeb00cf0f863a6a18b1600c96a3fd70414f  dmg/$SYS" | shasum -a 256 -c -
+          else
+            unzip -o -j ipsw.zip "$OS" "$SYS" -d dmg
+          fi
+          mv "dmg/$OS" dmg/os.dmg; mv "dmg/$SYS" dmg/sysos.dmg
           shasum -a 256 dmg/*.dmg
-          # The members are pinned by digest; refuse anything else.
-          echo "3f99b859c9728379110b66657c7b15285bcb1925ad8b5726542e2cdcf8b1028d  dmg/044-76040-038.dmg" | shasum -a 256 -c -
-          echo "b4908cde41d23e6bc05e6af51a2c9eeb00cf0f863a6a18b1600c96a3fd70414f  dmg/044-76034-038.dmg" | shasum -a 256 -c -
           ls -lh dmg
 
       - name: Attach both members read-only
         run: |
           set -euxo pipefail
           mkdir -p /tmp/os /tmp/sysos
-          sudo hdiutil attach -nobrowse -readonly -mountpoint /tmp/os    dmg/044-76040-038.dmg
-          sudo hdiutil attach -nobrowse -readonly -mountpoint /tmp/sysos dmg/044-76034-038.dmg
+          sudo hdiutil attach -nobrowse -readonly -mountpoint /tmp/os    dmg/os.dmg
+          sudo hdiutil attach -nobrowse -readonly -mountpoint /tmp/sysos dmg/sysos.dmg
           ls /tmp/os | head
           ls /tmp/sysos | head
 
