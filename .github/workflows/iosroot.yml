@@ -167,6 +167,23 @@ jobs:
               k = '/System/Library/LaunchDaemons/' + n + '.plist'
               print('disable', k, jobs.pop(k, None) is not None)
           wr(L, launchd)
+          # launchd also loads /System/Library/LaunchDaemons directly; move the plists too.
+          DD = '/System/Library/LaunchDaemons.disabled'
+          os.makedirs(R + DD, exist_ok=True)
+          for n in ('com.apple.CommCenter', 'com.apple.CommCenter-noncellular',
+                    'com.apple.CommCenterRootHelper', 'com.apple.CommCenterMobileHelper'):
+              k = '/System/Library/LaunchDaemons/' + n + '.plist'
+              if os.path.exists(R + k): shutil.move(R + k, R + DD + '/' + n + '.plist'); print('moved', k)
+          # 1b. UserEventAgent plugins that block its startup on missing hardware
+          #     daemons (backboardd brightness, CommCenter, Bluetooth via MobileGestalt,
+          #     Netrb, LaunchServices). launchd waits on UserEventAgent's event
+          #     publishers, and backboardd's pid-domain uncork never returns.
+          UD = '/System/Library/UserEventPlugins.disabled'
+          os.makedirs(R + UD, exist_ok=True)
+          for n in ('PerfPowerServicesEventListenerPlugin', 'com.apple.BackgroundTaskAgentPlugin',
+                    'com.apple.accessoryd.matching', 'USBEthernetSharing', 'ADEventListenerPlugin'):
+              k = '/System/Library/UserEventPlugins/' + n + '.plugin'
+              if os.path.exists(R + k): shutil.move(R + k, R + UD + '/' + n + '.plugin'); print('uea off', n)
           # 2. No audio hardware: no recorder server, VirtualAudio HAL plugin moved aside.
           for x in ('D22', 'D221', 'Default'):
               m = '/System/Library/Frameworks/MediaToolbox.framework/%s/SubServerConfiguration.plist' % x
