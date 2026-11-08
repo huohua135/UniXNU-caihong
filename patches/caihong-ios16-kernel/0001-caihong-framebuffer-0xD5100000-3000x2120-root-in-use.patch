@@ -1,0 +1,188 @@
+From 832c1afa2aca7114f443ace3b39b39f34724ff95 Mon Sep 17 00:00:00 2001
+From: caihong <caihong@local>
+Date: Sun, 8 Nov 2026 01:57:22 +0700
+Subject: [PATCH 1/3] caihong: framebuffer 0xD5100000 3000x2120, root in
+ userdata+1GiB, safe writes, no backlight
+
+---
+ iokit/Kernel/arm/HoujiBacklight.inc           |  2 +-
+ iokit/Kernel/arm/SweetFramebuffer.cpp         | 19 +++++++++++-----
+ iokit/Kernel/houji-ufs-root/HoujiGptCheck.h   | 22 ++++++++++++-------
+ iokit/Kernel/houji-ufs-root/HoujiRootPolicy.h |  3 ++-
+ iokit/Kernel/houji-ufs-root/HoujiRootWindow.h |  2 +-
+ iokit/Kernel/houji-ufs-root/HoujiUfsRead.cpp  | 15 ++++++++-----
+ 6 files changed, 41 insertions(+), 22 deletions(-)
+
+diff --git a/iokit/Kernel/arm/HoujiBacklight.inc b/iokit/Kernel/arm/HoujiBacklight.inc
+index 762e4ad..e9cdb25 100644
+--- a/iokit/Kernel/arm/HoujiBacklight.inc
++++ b/iokit/Kernel/arm/HoujiBacklight.inc
+@@ -201,7 +201,7 @@ extern "C" bool houji_backlight_allows_properties(IORegistryEntry *entry,OSObjec
+     return allowed;
+ }
+ static void houji_backlight_start(IOService *provider) {
+-    unsigned enabled=1;PE_parse_boot_argn("houji_bl",&enabled,sizeof(enabled));if(!enabled || houjiBacklightService)return;
++    unsigned enabled=0; /* caihong: houji panel/PMIC registers */ PE_parse_boot_argn("houji_bl",&enabled,sizeof(enabled));if(!enabled || houjiBacklightService)return;
+     auto *s=new HoujiBacklight;
+     if(!s)return;
+     if(!s->init()){s->release();return;}
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index aa02e43..f24c965 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -72,8 +72,16 @@ enum {
+ #define SWEET_FB_NOTIFY_VSYNC           5
+ #define SWEET_FB_VSYNC_US               16667
+ #define SWEET_FB_DOT_PITCH              458     /* iPhone X logical canvas */
+-#define HOUJI_LOGICAL_W 1200
+-#define HOUJI_LOGICAL_H 2670
++/* caihong: 3000x2120 landscape panel. First UI: an iPhone-X-shaped portrait
++ * canvas (978x2120, 9:19.5) centred on the scanout, exact pixel copy. */
++#define HOUJI_LOGICAL_W 978
++#define HOUJI_LOGICAL_H 2120
++#define CAIHONG_FB_PHYS 0xD5100000ULL
++#define CAIHONG_FB_W 3000
++#define CAIHONG_FB_H 2120
++#define CAIHONG_FB_ROW 12000
++#define CAIHONG_OX ((CAIHONG_FB_W - HOUJI_LOGICAL_W) / 2)
++#define CAIHONG_OY ((CAIHONG_FB_H - HOUJI_LOGICAL_H) / 2)
+ static uint64_t houji_fb_copy_bytes, houji_fb_present_ticks, houji_fb_max_present_ticks;
+ static uint64_t houji_fb_missed_timer_ticks;
+ static uint64_t houji_fb_callbacks,houji_fb_due_ticks;
+@@ -340,7 +348,8 @@ AppleCLCD::start(IOService *provider)
+ 	fHeight = (uint32_t)video.v_height;
+ 	fRowBytes = (uint32_t)video.v_rowBytes;
+ 	/* Only the independently observed Xiaomi 14 boot framebuffer. */
+-	if (fPhys != 0xfc400000ULL || fWidth != 1200 || fHeight != 2670 || fRowBytes != 4800) {
++	if (fPhys != CAIHONG_FB_PHYS || fWidth != CAIHONG_FB_W || fHeight != CAIHONG_FB_H || fRowBytes != CAIHONG_FB_ROW) {
++		IOLog("CAIHONG FB: got %llx %ux%u row %u\n", (unsigned long long)fPhys, fWidth, fHeight, fRowBytes);
+ 		IOLog("HOUJI FB: geometry guard refused\n");
+ 		return false;
+ 	}
+@@ -435,7 +444,7 @@ AppleCLCD::start(IOService *provider)
+ 	houji_backlight_start(this);
+ 	IOLog("SWEET FB: AppleCLCD %ux%u stride %u at 0x%llx, default surface %u\n",
+ 	    fWidth, fHeight, fRowBytes, fPhys, fSurface->id);
+-	IOLog("HOUJI FB: native 1200x2670 canvas, owned render target, exact pixel copy; no resampling; touch stays normalized\n");
++	IOLog("CAIHONG FB: 978x2120 canvas centred on 3000x2120, owned render target, exact pixel copy; no resampling; touch stays normalized\n");
+ 	IOLog("HOUJI FB: notification timer=%u Hz, asynchronous queued copy; inherited panel timing is not measured\n",notifyHz);
+ 	return true;
+ }
+@@ -756,7 +765,7 @@ AppleCLCD::present(const HoujiDisplayFrame &frame)
+ 			if(token>0)houjiObserveColours(frame.id,layer,s,src,sx,sy,w,h,dx,dy);
+ 			copied += (uint64_t)w * h * 4;
+ 			for(int32_t y=0;y<h;y++)
+-			 memcpy((void *)(fPixels+(uint64_t)(dy+y)*fRowBytes+(uint64_t)dx*4),
++			 memcpy((void *)(fPixels+(uint64_t)(dy+y+CAIHONG_OY)*fRowBytes+(uint64_t)(dx+CAIHONG_OX)*4),
+ 			  (const void *)(src+s->offset+(uint64_t)(sy+y)*s->bytesPerRow+(uint64_t)sx*4),(size_t)w*4);
+ 		}
+ 		s->release();
+diff --git a/iokit/Kernel/houji-ufs-root/HoujiGptCheck.h b/iokit/Kernel/houji-ufs-root/HoujiGptCheck.h
+index 5fe2c3b..b18e4f1 100644
+--- a/iokit/Kernel/houji-ufs-root/HoujiGptCheck.h
++++ b/iokit/Kernel/houji-ufs-root/HoujiGptCheck.h
+@@ -9,15 +9,21 @@ static uint32_t houjiCrc32(const uint8_t *p, unsigned n, bool header=false) {
+   }
+   return ~crc;
+ }
++// caihong (OPD2404): validate the live GPT by its own CRCs and require the
++// userdata entry the root window lives in (bounds from the live GPT, 4 KiB LBA).
++static const uint64_t kCaihongUserdataFirst=3769068ULL, kCaihongUserdataLast=123786234ULL;
+ static const char *houjiGptError(const uint8_t *h,unsigned hn,const uint8_t *e,unsigned en) {
+-  if(!h||!e||hn!=4096||en!=8192)return "GPT buffer size";
++  if(!h||!e||hn!=4096||en!=16384)return "GPT buffer size";
+   static const uint8_t magic[8]={'E','F','I',' ','P','A','R','T'};
+-  static const uint8_t disk[16]={0x4d,0x48,0xd1,0xe7,0x8a,0xc5,0x30,0xaa,0x98,0xc1,0xb1,0x10,0xb4,0xbc,0x5e,0xc4};
+   for(unsigned i=0;i<8;i++)if(h[i]!=magic[i])return "GPT signature";
+-  for(unsigned i=0;i<16;i++)if(h[56+i]!=disk[i])return "GPT disk GUID differs";
+-  if(houjiLe32(h+8)!=0x10000||houjiLe32(h+12)!=92||houjiLe32(h+20)||houjiLe64(h+24)!=1||
+-     houjiLe64(h+32)!=0x7AABFFF||houjiLe64(h+72)!=2||houjiLe32(h+80)!=64||houjiLe32(h+84)!=128)return "GPT geometry differs";
+-  if(houjiLe32(h+16)!=0x631FC7EA||houjiCrc32(h,92,true)!=0x631FC7EA)return "GPT header CRC differs";
+-  if(houjiLe32(h+88)!=0x9F1BB496||houjiCrc32(e,8192)!=0x9F1BB496)return "GPT entry array CRC differs";
+-  return nullptr;
++  uint32_t hsize=houjiLe32(h+12),count=houjiLe32(h+80),esize=houjiLe32(h+84);
++  if(houjiLe32(h+8)!=0x10000||hsize<92||hsize>4096||houjiLe64(h+24)!=1||houjiLe64(h+72)!=2||esize!=128||!count||count*esize>en)
++    return "GPT geometry differs";
++  if(houjiCrc32(h,hsize,true)!=houjiLe32(h+16))return "GPT header CRC differs";
++  if(houjiCrc32(e,count*esize)!=houjiLe32(h+88))return "GPT entry array CRC differs";
++  for(uint32_t i=0;i<count;i++){
++    const uint8_t *x=e+i*esize;
++    if(houjiLe64(x+32)==kCaihongUserdataFirst&&houjiLe64(x+40)==kCaihongUserdataLast)return nullptr;
++  }
++  return "caihong userdata entry not found";
+ }
+diff --git a/iokit/Kernel/houji-ufs-root/HoujiRootPolicy.h b/iokit/Kernel/houji-ufs-root/HoujiRootPolicy.h
+index 7931385..b0e54d0 100644
+--- a/iokit/Kernel/houji-ufs-root/HoujiRootPolicy.h
++++ b/iokit/Kernel/houji-ufs-root/HoujiRootPolicy.h
+@@ -1,6 +1,7 @@
+ #define HOUJI_ROOT_GIB 32
+ // SPDX-License-Identifier: BSD-2-Clause-Patent
+-static const uint32_t kHoujiRootFirst=2260480U;
++// caihong: HFSX root at userdata (LBA 3769068) + 1 GiB; the payload FAT sits before it.
++static const uint32_t kHoujiRootFirst=3769068U+262144U;
+ // Existing qualified images keep 12 GiB. A newly built, separately verified
+ // volume may opt into 32 GiB; this never broadens the physical partition.
+ #ifndef HOUJI_ROOT_GIB
+diff --git a/iokit/Kernel/houji-ufs-root/HoujiRootWindow.h b/iokit/Kernel/houji-ufs-root/HoujiRootWindow.h
+index e760c97..13f3c33 100644
+--- a/iokit/Kernel/houji-ufs-root/HoujiRootWindow.h
++++ b/iokit/Kernel/houji-ufs-root/HoujiRootWindow.h
+@@ -17,7 +17,7 @@ static bool houjiHfsRootHeader(const uint8_t *page,unsigned n) {
+   uint32_t total=(uint32_t(h[44])<<24)|(uint32_t(h[45])<<16)|(uint32_t(h[46])<<8)|h[47];
+   if(h[0]!=0x48 || h[1]!=0x58 || h[2] || h[3]!=5 ||
+      h[40] || h[41] || h[42]!=0x10 || h[43] || total!=kHoujiRootBlocks)return false;
+-  for(unsigned i=0;i<8;i++)if(h[104+i]!=id[i])return false;
++  (void)id; // caihong: volume id of our own image is not pinned
+   return true;
+ }
+ // Returns 0, invalid-span=1, or transport-error=2. The caller serializes I/O.
+diff --git a/iokit/Kernel/houji-ufs-root/HoujiUfsRead.cpp b/iokit/Kernel/houji-ufs-root/HoujiUfsRead.cpp
+index 39989f2..c081adb 100644
+--- a/iokit/Kernel/houji-ufs-root/HoujiUfsRead.cpp
++++ b/iokit/Kernel/houji-ufs-root/HoujiUfsRead.cpp
+@@ -344,6 +344,7 @@ static unsigned copyKernelMessages(char *dst,unsigned capacity) {
+ }
+ 
+ static IOReturn writeLogBlock(unsigned index,const uint8_t *data) {
++  (void)index;(void)data;return kIOReturnNotPermitted; // caihong: log LBAs belong to another layout
+   if(!gLogArmed || !gHost.ready || gHost.poisoned || index>=16 || !data) return kIOReturnNotPermitted;
+   IOLockLock(gHost.lock);
+   if(!hostClearUcd()) {IOLockUnlock(gHost.lock);return kIOReturnNotReady;}
+@@ -441,9 +442,9 @@ static void initializeNativeFlags(void) {
+   gCheckpointLock=IOLockAlloc();
+   if(!gCheckpointLock)panic("HOUJI checkpoint lock allocation");
+   gFlagsInitialized=true;gRootDiagnosticEnabled=true;
+-  int v=0;PE_parse_boot_argn("houji_ufs_log",&v,sizeof(v));gLogEnabled=v==1;
++  int v=0;PE_parse_boot_argn("houji_ufs_log",&v,sizeof(v));gLogEnabled=false; // caihong: log LBAs are Xiaomi 14 layout
+   v=0;PE_parse_boot_argn("houji_native_root",&v,sizeof(v));gRootEnabled=v==1;
+-  v=0;PE_parse_boot_argn("houji_return_recovery",&v,sizeof(v));gReturnRecovery=v==1;
++  v=0;PE_parse_boot_argn("houji_return_recovery",&v,sizeof(v));gReturnRecovery=false; // caihong: writes LBA 1024
+ }
+ static void ensureNative(void) {
+   initializeNativeFlags();
+@@ -452,18 +453,20 @@ static void ensureNative(void) {
+   if(!hostBringUp(&why))rootDiagnosticFailure(why);
+   IOLog("HOUJI MEMORY: XNU physical base=%llx bytes=%llu; UFS DMA=%llx bytes=%u\n",
+         (uint64_t)gPhysBase,(uint64_t)gPhysSize,gHost.phys,(unsigned)kDmaBytes);
+-  static uint8_t header[4096],entries[8192];
++  static uint8_t header[4096],entries[16384];
+   nativeStage("read primary GPT header");
+   if(hostRead4k(0,1,1,header)!=kIOReturnSuccess)rootDiagnosticFailure("primary GPT read");
+-  nativeStage("read all 64 GPT entries");
+-  if(hostRead4k(0,2,2,entries)!=kIOReturnSuccess)rootDiagnosticFailure("GPT entry array read");
++  nativeStage("read 128 GPT entries");
++  if(hostRead4k(0,2,4,entries)!=kIOReturnSuccess)rootDiagnosticFailure("GPT entry array read");
+   why=houjiGptError(header,sizeof(header),entries,sizeof(entries));
+   if(why)rootDiagnosticFailure(why);
+   gGptVerified=true;
+-  nativeStage("native GPT verified 631fc7ea/9f1bb496");
++  nativeStage("native GPT verified (caihong userdata)");
+ }
+ static IOReturn writeNativeBlocks(uint32_t lba,unsigned blocks,const uint8_t *data) {
+   if(!gHost.ready || gHost.poisoned || !data || !blocks || blocks>32)return kIOReturnNotReady;
++  // caihong: never write outside the HFSX root window inside userdata.
++  if(lba<kHoujiRootFirst || lba-kHoujiRootFirst>=kHoujiRootBlocks || blocks>kHoujiRootBlocks-(lba-kHoujiRootFirst))return kIOReturnNotPermitted;
+   IOLockLock(gHost.lock);
+   if(!hostClearUcd()){IOLockUnlock(gHost.lock);return kIOReturnNotReady;}
+   memcpy(gHost.virt+kDataOffset,data,blocks*4096U);

@@ -1,0 +1,419 @@
+From 12dc0028166df590a6518b413a80e318f1c91629 Mon Sep 17 00:00:00 2001
+From: caihong <caihong@local>
+Date: Sun, 8 Nov 2026 02:09:32 +0700
+Subject: [PATCH 2/3] linux build: hakios makefile fixes, stock-clang compat,
+ GPU firmware stubs
+
+---
+ Makefile                                      | 12 ++---
+ SETUP/config/doconf                           | 13 +++--
+ bsd/conf/Makefile                             |  3 ++
+ bsd/conf/Makefile.arm64                       |  5 ++
+ bsd/conf/Makefile.template                    |  8 ++++
+ .../houji-ufs-root/HoujiCpFirmwareImages.h    |  4 ++
+ .../houji-ufs-root/HoujiGmuFirmwareImage.h    |  3 ++
+ iokit/conf/Makefile                           |  3 ++
+ libkern/conf/Makefile                         |  3 ++
+ libkern/libkern/c++/OSData.h                  |  2 +-
+ libsa/conf/Makefile                           |  3 ++
+ makedefs/MakeInc.cmd                          | 48 +++++++++----------
+ makedefs/MakeInc.def                          |  3 ++
+ makedefs/MakeInc.top                          |  2 +-
+ .../corecrypto/arm64_isa_compatibility.h      |  2 +-
+ osfmk/conf/Makefile                           |  3 ++
+ osfmk/kern/kalloc.h                           |  4 ++
+ pexpert/conf/Makefile                         |  3 ++
+ san/conf/Makefile                             |  3 ++
+ security/conf/Makefile                        |  3 ++
+ 20 files changed, 94 insertions(+), 36 deletions(-)
+ create mode 100644 iokit/Kernel/houji-ufs-root/HoujiCpFirmwareImages.h
+ create mode 100644 iokit/Kernel/houji-ufs-root/HoujiGmuFirmwareImage.h
+
+diff --git a/Makefile b/Makefile
+index e78d847..03fc3ff 100644
+--- a/Makefile
++++ b/Makefile
+@@ -143,8 +143,8 @@ installsrc:
+ 
+ else ifneq ($(findstring xnu_tests,$(RC_ProjectName)),)
+ 
+-export SYSCTL_HW_PHYSICALCPU := $(shell /usr/sbin/sysctl -n hw.physicalcpu)
+-export SYSCTL_HW_LOGICALCPU  := $(shell /usr/sbin/sysctl -n hw.logicalcpu)
++export SYSCTL_HW_PHYSICALCPU := $(shell nproc)
++export SYSCTL_HW_LOGICALCPU  := $(shell nproc)
+ MAKEJOBS := --jobs=$(shell expr $(SYSCTL_HW_LOGICALCPU) + 1)
+ 
+ default: install
+@@ -160,8 +160,8 @@ installsrc:
+ 
+ else ifeq ($(RC_ProjectName),xnu_tests_driverkit)
+ 
+-export SYSCTL_HW_PHYSICALCPU := $(shell /usr/sbin/sysctl -n hw.physicalcpu)
+-export SYSCTL_HW_LOGICALCPU  := $(shell /usr/sbin/sysctl -n hw.logicalcpu)
++export SYSCTL_HW_PHYSICALCPU := $(shell nproc)
++export SYSCTL_HW_LOGICALCPU  := $(shell nproc)
+ MAKEJOBS := --jobs=$(shell expr $(SYSCTL_HW_LOGICALCPU) + 1)
+ 
+ default: install
+@@ -193,8 +193,8 @@ endif
+ # CPUs. If the system does not support SMT, use N+1.
+ # If MAKEJOBS or -jN is passed on the make line, that takes precedence.
+ #
+-export SYSCTL_HW_PHYSICALCPU := $(shell /usr/sbin/sysctl -n hw.physicalcpu)
+-export SYSCTL_HW_LOGICALCPU  := $(shell /usr/sbin/sysctl -n hw.logicalcpu)
++export SYSCTL_HW_PHYSICALCPU := $(shell nproc)
++export SYSCTL_HW_LOGICALCPU  := $(shell nproc)
+ MAKEJOBS := --jobs=$(shell expr $(SYSCTL_HW_LOGICALCPU) + 1)
+ 
+ TOP_TARGETS = \
+diff --git a/SETUP/config/doconf b/SETUP/config/doconf
+index 222158a..030e55b 100755
+--- a/SETUP/config/doconf
++++ b/SETUP/config/doconf
+@@ -1,4 +1,4 @@
+-#!/bin/csh -f
++#!/usr/bin/env -S csh -f
+ set path = ($path .)
+ ######################################################################
+ # HISTORY
+@@ -184,6 +184,13 @@ if ($?beverbose) then
+     echo MASTER_CPU=$MASTER_CPU
+ endif
+ 
++# HakiOS: the drivers a configuration builds (CONFIG_HAKIOS_*), as tools/hakios-config.py kernel writes them: a list
++# HAKIOS_DRIVERS of attributes, which the configurations of MASTER.arm64.bcm2837 include, and an `options` line for each
++set MASTER_HAKIOS = /dev/null
++if (-f ${MASTER_DIR}/MASTER.hakios) then
++    set MASTER_HAKIOS = ${MASTER_DIR}/MASTER.hakios
++endif
++
+ foreach SYS ($argv)
+     set SYSID=${SYS}_${ID}
+     set SYSCONF=$OBJDIR/config.$SYSID
+@@ -193,8 +200,8 @@ foreach SYS ($argv)
+     endif
+     echo +$SYS \
+     | \
+-    cat $MASTER $MASTER_CPU - \
+-        $MASTER $MASTER_CPU \
++    cat $MASTER $MASTER_CPU $MASTER_HAKIOS - \
++        $MASTER $MASTER_CPU $MASTER_HAKIOS \
+     | \
+     unifdef -t -DPLATFORM_${PLATFORM} -DCPU_$cpu -DSOC_CONFIG_${SOC_CONFIG} -DSYS_${SYS} $DEF_AVP $DEF_SEED - \
+     | \
+diff --git a/bsd/conf/Makefile b/bsd/conf/Makefile
+index 050f34a..c58ff62 100644
+--- a/bsd/conf/Makefile
++++ b/bsd/conf/Makefile
+@@ -17,6 +17,9 @@ MASTERCONFDIR = $(SRCROOT)/config
+ DOCONFDEPS = $(addprefix $(MASTERCONFDIR)/, MASTER MASTER.$(DOCONF_ARCH_CONFIG_LC)) \
+ 	$(addprefix $(SOURCE)/, Makefile.template Makefile.$(DOCONF_ARCH_CONFIG_LC) files files.$(DOCONF_ARCH_CONFIG_LC))
+ 
++# HakiOS: the drivers' choice (tools/hakios-config.py kernel); a new choice makes the configuration again
++DOCONFDEPS += $(wildcard $(MASTERCONFDIR)/MASTER.hakios)
++
+ ifneq (,$(wildcard $(MASTERCONFDIR)/MASTER.$(DOCONF_ARCH_CONFIG_LC).$(CURRENT_MACHINE_CONFIG_LC)))
+ DOCONFDEPS += $(MASTERCONFDIR)/MASTER.$(DOCONF_ARCH_CONFIG_LC).$(CURRENT_MACHINE_CONFIG_LC)
+ endif
+diff --git a/bsd/conf/Makefile.arm64 b/bsd/conf/Makefile.arm64
+index a4d2504..aad7299 100644
+--- a/bsd/conf/Makefile.arm64
++++ b/bsd/conf/Makefile.arm64
+@@ -5,6 +5,11 @@
+ # Inline assembly doesn't interact well with LTO
+ fbt_arm.o_CFLAGS_ADD += $(CFLAGS_NOLTO_FLAG)
+ 
++# libdeflate's arm headers (bsd/miscfs/apfs/libdeflate) include the compiler's own <arm_acle.h>
++# and <arm_neon.h>, which the kernel's include paths do not have: they come after those paths,
++# so the kernel's <stdint.h> and the rest are still the ones found.
++apfs_deflate.o_CFLAGS_ADD += -idirafter $(shell $(CC) -print-resource-dir)/include
++
+ kern_csr.o_INCFLAGS += -I$(SRCROOT)/osfmk
+ kern_debug.o_INCFLAGS += -I$(SRCROOT)/osfmk
+ 
+diff --git a/bsd/conf/Makefile.template b/bsd/conf/Makefile.template
+index f2d8bf8..a340d9e 100644
+--- a/bsd/conf/Makefile.template
++++ b/bsd/conf/Makefile.template
+@@ -606,5 +606,13 @@ do_build_all:: do_all
+ 
+ %RULES
+ 
++# HakiOS: HFS Plus built in (bsd/hfs, Apple's hfs-627.100.6), compiled as its kext was: against the kernel's KPI,
++# not its insides (no XNU/BSD/MACH_KERNEL_PRIVATE), kext-config.h first, its own headers beside it, and its warnings
++# its own (it is Apple's code as it was published, not this kernel's)
++HFS_OBJS = $(patsubst %.c,%.o,$(notdir $(wildcard $(SRCROOT)/bsd/hfs/*.c)))
++$(foreach o,$(HFS_OBJS),$(eval $(o)_CFLAGS_ADD += -UXNU_KERNEL_PRIVATE -UBSD_KERNEL_PRIVATE -UMACH_KERNEL_PRIVATE \
++	-include $(SRCROOT)/bsd/hfs/kext-config.h -I$(SRCROOT)/bsd/hfs -idirafter $(SDKROOT)/usr/include))
++$(foreach o,$(HFS_OBJS),$(eval $(o)_CWARNFLAGS_ADD += -w))
++
+ include $(MakeInc_rule)
+ include $(MakeInc_dir)
+diff --git a/iokit/Kernel/houji-ufs-root/HoujiCpFirmwareImages.h b/iokit/Kernel/houji-ufs-root/HoujiCpFirmwareImages.h
+new file mode 100644
+index 0000000..2358fd9
+--- /dev/null
++++ b/iokit/Kernel/houji-ufs-root/HoujiCpFirmwareImages.h
+@@ -0,0 +1,4 @@
++/* caihong STAGE-1 STUB: zero-filled, GPU disabled. Replace with real A750 firmware (make-firmware-headers.py) before enabling the GPU. */
++#pragma once
++static const unsigned char gHoujiSqeFirmwareImage[85300]={0};
++static const unsigned char gHoujiAqeFirmwareImage[33176]={0};
+diff --git a/iokit/Kernel/houji-ufs-root/HoujiGmuFirmwareImage.h b/iokit/Kernel/houji-ufs-root/HoujiGmuFirmwareImage.h
+new file mode 100644
+index 0000000..c5ea139
+--- /dev/null
++++ b/iokit/Kernel/houji-ufs-root/HoujiGmuFirmwareImage.h
+@@ -0,0 +1,3 @@
++/* caihong STAGE-1 STUB: zero-filled, GPU disabled. Replace with real A750 firmware (make-firmware-headers.py) before enabling the GPU. */
++#pragma once
++static const unsigned char gHoujiGmuFirmwareImage[78588]={0};
+diff --git a/iokit/conf/Makefile b/iokit/conf/Makefile
+index 83259eb..8864e5c 100644
+--- a/iokit/conf/Makefile
++++ b/iokit/conf/Makefile
+@@ -16,6 +16,9 @@ endif
+ MASTERCONFDIR = $(SRCROOT)/config
+ DOCONFDEPS = $(addprefix $(MASTERCONFDIR)/, MASTER MASTER.$(DOCONF_ARCH_CONFIG_LC)) \
+ 	$(addprefix $(SOURCE)/, Makefile.template Makefile.$(DOCONF_ARCH_CONFIG_LC) files files.$(DOCONF_ARCH_CONFIG_LC))
++# HakiOS: the drivers' choice (tools/hakios-config.py kernel); a new choice makes the configuration again
++DOCONFDEPS += $(wildcard $(MASTERCONFDIR)/MASTER.hakios)
++
+ ifneq (,$(wildcard $(MASTERCONFDIR)/MASTER.$(DOCONF_ARCH_CONFIG_LC).$(CURRENT_MACHINE_CONFIG_LC)))
+ DOCONFDEPS += $(MASTERCONFDIR)/MASTER.$(DOCONF_ARCH_CONFIG_LC).$(CURRENT_MACHINE_CONFIG_LC)
+ endif
+diff --git a/libkern/conf/Makefile b/libkern/conf/Makefile
+index 050f34a..c58ff62 100644
+--- a/libkern/conf/Makefile
++++ b/libkern/conf/Makefile
+@@ -17,6 +17,9 @@ MASTERCONFDIR = $(SRCROOT)/config
+ DOCONFDEPS = $(addprefix $(MASTERCONFDIR)/, MASTER MASTER.$(DOCONF_ARCH_CONFIG_LC)) \
+ 	$(addprefix $(SOURCE)/, Makefile.template Makefile.$(DOCONF_ARCH_CONFIG_LC) files files.$(DOCONF_ARCH_CONFIG_LC))
+ 
++# HakiOS: the drivers' choice (tools/hakios-config.py kernel); a new choice makes the configuration again
++DOCONFDEPS += $(wildcard $(MASTERCONFDIR)/MASTER.hakios)
++
+ ifneq (,$(wildcard $(MASTERCONFDIR)/MASTER.$(DOCONF_ARCH_CONFIG_LC).$(CURRENT_MACHINE_CONFIG_LC)))
+ DOCONFDEPS += $(MASTERCONFDIR)/MASTER.$(DOCONF_ARCH_CONFIG_LC).$(CURRENT_MACHINE_CONFIG_LC)
+ endif
+diff --git a/libkern/libkern/c++/OSData.h b/libkern/libkern/c++/OSData.h
+index 28ea44c..9c7a1fe 100644
+--- a/libkern/libkern/c++/OSData.h
++++ b/libkern/libkern/c++/OSData.h
+@@ -965,7 +965,7 @@ private:
+ 		    "only trivially copyable types can be contained");
+ 		static_assert(!__is_pointer(T) || (acquisition == kValueNoCopy),
+ 		    "pointers cannot be contained");
+-		static_assert(KALLOC_TYPE_IS_DATA_ONLY(T) || (acquisition == kValueNoCopy),
++		static_assert(XNU_NO_TYPE_BUILTINS || KALLOC_TYPE_IS_DATA_ONLY(T) || (acquisition == kValueNoCopy),
+ 		    "only plain data types can be contained (consider using OSValueObject)");
+ 		return 0; // C++11 does not support void-returning constexpr functions
+ 	}
+diff --git a/libsa/conf/Makefile b/libsa/conf/Makefile
+index 050f34a..c58ff62 100644
+--- a/libsa/conf/Makefile
++++ b/libsa/conf/Makefile
+@@ -17,6 +17,9 @@ MASTERCONFDIR = $(SRCROOT)/config
+ DOCONFDEPS = $(addprefix $(MASTERCONFDIR)/, MASTER MASTER.$(DOCONF_ARCH_CONFIG_LC)) \
+ 	$(addprefix $(SOURCE)/, Makefile.template Makefile.$(DOCONF_ARCH_CONFIG_LC) files files.$(DOCONF_ARCH_CONFIG_LC))
+ 
++# HakiOS: the drivers' choice (tools/hakios-config.py kernel); a new choice makes the configuration again
++DOCONFDEPS += $(wildcard $(MASTERCONFDIR)/MASTER.hakios)
++
+ ifneq (,$(wildcard $(MASTERCONFDIR)/MASTER.$(DOCONF_ARCH_CONFIG_LC).$(CURRENT_MACHINE_CONFIG_LC)))
+ DOCONFDEPS += $(MASTERCONFDIR)/MASTER.$(DOCONF_ARCH_CONFIG_LC).$(CURRENT_MACHINE_CONFIG_LC)
+ endif
+diff --git a/makedefs/MakeInc.cmd b/makedefs/MakeInc.cmd
+index aa9215c..e503ab4 100644
+--- a/makedefs/MakeInc.cmd
++++ b/makedefs/MakeInc.cmd
+@@ -100,12 +100,12 @@ ifeq ($(VERBOSE),YES)
+ 	_v =
+ 	_vstdout =
+ 	_vstderr =
+-	XCRUN = /usr/bin/xcrun -verbose
++	XCRUN = xcrun -verbose
+ else
+ 	_v = @
+ 	_vstdout = > /dev/null
+ 	_vstderr = 2> /dev/null
+-	XCRUN = /usr/bin/xcrun
++	XCRUN = xcrun
+ endif
+ 
+ VERBOSE_GENERATED_MAKE_FRAGMENTS = NO
+@@ -275,27 +275,27 @@ REPLACECONTENTS = $(OBJROOT)/SETUP/replacecontents/replacecontents
+ JSONCOMPILATIONDB = $(OBJROOT)/SETUP/json_compilation_db/json_compilation_db
+ 
+ # Standard BSD tools
+-RM = /bin/rm -f
+-RMDIR = /bin/rmdir
+-CP = /bin/cp
+-MV = /bin/mv
+-LN = /bin/ln -fs
+-CAT = /bin/cat
+-MKDIR = /bin/mkdir -p
+-CHMOD = /bin/chmod
+-FIND = /usr/bin/find
+-XARGS = /usr/bin/xargs
+-PAX = /bin/pax
+-BASENAME = /usr/bin/basename
+-DIRNAME = /usr/bin/dirname
+-TR = /usr/bin/tr
+-TOUCH = /usr/bin/touch
+-SLEEP = /bin/sleep
+-AWK = /usr/bin/awk
+-SED = /usr/bin/sed
+-PLUTIL = /usr/bin/plutil
+-PATCH = /usr/bin/patch
+-GREP = /usr/bin/grep
++RM = rm -f
++RMDIR = rmdir
++CP = cp
++MV = mv
++LN = ln -fs
++CAT = cat
++MKDIR = mkdir -p
++CHMOD = chmod
++FIND = find
++XARGS = xargs
++PAX = pax
++BASENAME = basename
++DIRNAME = dirname
++TR = tr
++TOUCH = touch
++SLEEP = sleep
++AWK = awk
++SED = sed
++PLUTIL = plutil
++PATCH = patch
++GREP = grep
+ 
+ #
+ # Command to generate host binaries. Intentionally not
+@@ -317,7 +317,7 @@ ifeq ($(origin HOST_GM4),undefined)
+ 	export HOST_GM4		:= $(shell $(XCRUN) -sdk $(HOST_SDKROOT) -find gm4)
+ endif
+ ifeq ($(origin HOST_CODESIGN),undefined)
+-	export HOST_CODESIGN	:= /usr/bin/codesign
++	export HOST_CODESIGN	:= codesign
+ endif
+ ifeq ($(origin HOST_CODESIGN_ALLOCATE),undefined)
+ 	export HOST_CODESIGN_ALLOCATE	:= $(shell $(XCRUN) -sdk $(HOST_SDKROOT) -find codesign_allocate)
+diff --git a/makedefs/MakeInc.def b/makedefs/MakeInc.def
+index 69b13f9..b13619c 100644
+--- a/makedefs/MakeInc.def
++++ b/makedefs/MakeInc.def
+@@ -861,6 +861,9 @@ LDFILES_KERNEL_ONLY = $(TARGET)/all-kpi.exp $(TARGET)/all-alias.exp $(TARGET)/sy
+ #
+ LD_KERNEL_LIBS	   = -lcc_kext
+ LD_KERNEL_ARCHIVES = $(LDFLAGS_KERNEL_SDK) -lfirehose_kernel
++# Darwin-on-hakios: objects made outside this tree, linked when the build is given any (the
++# Wi-Fi driver, see bsd/dev/hakios.lx.c)
++LD_KERNEL_ARCHIVES += $(HAKIOS_OBJECTS)
+ # Link opensource binary library
+ ifneq ($(filter T6000 T8101 VMAPPLE T6000 T8101 VMAPPLE,$(CURRENT_MACHINE_CONFIG)),)
+ 	LDFLAGS_KERNEL_ONLY += -rdynamic -Wl,-force_load,$(KDKROOT)/System/Library/KernelSupport/lib$(CURRENT_MACHINE_CONFIG).os.$(CURRENT_KERNEL_CONFIG).a
+diff --git a/makedefs/MakeInc.top b/makedefs/MakeInc.top
+index 0316792..b9c195b 100644
+--- a/makedefs/MakeInc.top
++++ b/makedefs/MakeInc.top
+@@ -285,7 +285,7 @@ endif
+ # $(warning PRIMARY_KERNEL_CONFIGS is $(PRIMARY_KERNEL_CONFIGS))
+ # $(warning VARIANT_CONFIGS is $(VARIANT_CONFIGS))
+ 
+-MEMORY_SIZE := $(shell /usr/sbin/sysctl -n hw.memsize)
++MEMORY_SIZE := $(shell if [ -r /proc/meminfo ]; then awk '/MemTotal/{printf "%d", $$2*1024}' /proc/meminfo; else sysctl -n hw.memsize; fi)
+ 
+ # Assume LTO scaling by default, unless it is being explicitly passed on the command-line
+ LARGE_BUILD_FOOTPRINT := $(if $(BUILD_LTO),$(BUILD_LTO),1)
+diff --git a/osfmk/arm64/corecrypto/arm64_isa_compatibility.h b/osfmk/arm64/corecrypto/arm64_isa_compatibility.h
+index b9549da..b59c00d 100644
+--- a/osfmk/arm64/corecrypto/arm64_isa_compatibility.h
++++ b/osfmk/arm64/corecrypto/arm64_isa_compatibility.h
+@@ -28,7 +28,7 @@
+ // #include <Availability.h>
+ #include <sys/cdefs.h>
+ 
+-#if defined(__clang__) && ((defined(__apple_build_version__) && __apple_build_version__ > 5010000))
++#if defined(__clang__) /* caihong: stock clang also wants the v-register crypto syntax */
+ #define __USES_V_CRYPTO_INTRINSICS 1
+ #else
+ #define __USES_V_CRYPTO_INTRINSICS 0
+diff --git a/osfmk/conf/Makefile b/osfmk/conf/Makefile
+index 050f34a..c58ff62 100644
+--- a/osfmk/conf/Makefile
++++ b/osfmk/conf/Makefile
+@@ -17,6 +17,9 @@ MASTERCONFDIR = $(SRCROOT)/config
+ DOCONFDEPS = $(addprefix $(MASTERCONFDIR)/, MASTER MASTER.$(DOCONF_ARCH_CONFIG_LC)) \
+ 	$(addprefix $(SOURCE)/, Makefile.template Makefile.$(DOCONF_ARCH_CONFIG_LC) files files.$(DOCONF_ARCH_CONFIG_LC))
+ 
++# HakiOS: the drivers' choice (tools/hakios-config.py kernel); a new choice makes the configuration again
++DOCONFDEPS += $(wildcard $(MASTERCONFDIR)/MASTER.hakios)
++
+ ifneq (,$(wildcard $(MASTERCONFDIR)/MASTER.$(DOCONF_ARCH_CONFIG_LC).$(CURRENT_MACHINE_CONFIG_LC)))
+ DOCONFDEPS += $(MASTERCONFDIR)/MASTER.$(DOCONF_ARCH_CONFIG_LC).$(CURRENT_MACHINE_CONFIG_LC)
+ endif
+diff --git a/osfmk/kern/kalloc.h b/osfmk/kern/kalloc.h
+index 535bc7b..0bcaff9 100644
+--- a/osfmk/kern/kalloc.h
++++ b/osfmk/kern/kalloc.h
+@@ -821,12 +821,16 @@ __options_decl(kt_granule_t, uint32_t, {
+  * @param ptr           the pointer whose type needs to be checked.
+  * @param type          the type which the pointer will be checked against.
+  */
++#if XNU_NO_TYPE_BUILTINS
++#define KALLOC_TYPE_IS_COMPATIBLE_PTR(ptr, type)  (1)
++#else
+ #define KALLOC_TYPE_IS_COMPATIBLE_PTR(ptr, type)                   \
+ 	_Pragma("clang diagnostic push")                               \
+ 	_Pragma("clang diagnostic ignored \"-Wvoid-ptr-dereference\"") \
+ 	(__builtin_xnu_types_compatible(__typeof__(*(ptr)), type) ||   \
+ 	    __builtin_xnu_types_compatible(__typeof__(*(ptr)), void))  \
+ 	_Pragma("clang diagnostic pop")
++#endif /* XNU_NO_TYPE_BUILTINS */
+ 
+ #define KALLOC_TYPE_ASSERT_COMPATIBLE_POINTER(ptr, type) \
+ 	_Static_assert(KALLOC_TYPE_IS_COMPATIBLE_PTR(ptr, type), \
+diff --git a/pexpert/conf/Makefile b/pexpert/conf/Makefile
+index 050f34a..c58ff62 100644
+--- a/pexpert/conf/Makefile
++++ b/pexpert/conf/Makefile
+@@ -17,6 +17,9 @@ MASTERCONFDIR = $(SRCROOT)/config
+ DOCONFDEPS = $(addprefix $(MASTERCONFDIR)/, MASTER MASTER.$(DOCONF_ARCH_CONFIG_LC)) \
+ 	$(addprefix $(SOURCE)/, Makefile.template Makefile.$(DOCONF_ARCH_CONFIG_LC) files files.$(DOCONF_ARCH_CONFIG_LC))
+ 
++# HakiOS: the drivers' choice (tools/hakios-config.py kernel); a new choice makes the configuration again
++DOCONFDEPS += $(wildcard $(MASTERCONFDIR)/MASTER.hakios)
++
+ ifneq (,$(wildcard $(MASTERCONFDIR)/MASTER.$(DOCONF_ARCH_CONFIG_LC).$(CURRENT_MACHINE_CONFIG_LC)))
+ DOCONFDEPS += $(MASTERCONFDIR)/MASTER.$(DOCONF_ARCH_CONFIG_LC).$(CURRENT_MACHINE_CONFIG_LC)
+ endif
+diff --git a/san/conf/Makefile b/san/conf/Makefile
+index 050f34a..c58ff62 100644
+--- a/san/conf/Makefile
++++ b/san/conf/Makefile
+@@ -17,6 +17,9 @@ MASTERCONFDIR = $(SRCROOT)/config
+ DOCONFDEPS = $(addprefix $(MASTERCONFDIR)/, MASTER MASTER.$(DOCONF_ARCH_CONFIG_LC)) \
+ 	$(addprefix $(SOURCE)/, Makefile.template Makefile.$(DOCONF_ARCH_CONFIG_LC) files files.$(DOCONF_ARCH_CONFIG_LC))
+ 
++# HakiOS: the drivers' choice (tools/hakios-config.py kernel); a new choice makes the configuration again
++DOCONFDEPS += $(wildcard $(MASTERCONFDIR)/MASTER.hakios)
++
+ ifneq (,$(wildcard $(MASTERCONFDIR)/MASTER.$(DOCONF_ARCH_CONFIG_LC).$(CURRENT_MACHINE_CONFIG_LC)))
+ DOCONFDEPS += $(MASTERCONFDIR)/MASTER.$(DOCONF_ARCH_CONFIG_LC).$(CURRENT_MACHINE_CONFIG_LC)
+ endif
+diff --git a/security/conf/Makefile b/security/conf/Makefile
+index 2efc18a..04fc48e 100644
+--- a/security/conf/Makefile
++++ b/security/conf/Makefile
+@@ -17,6 +17,9 @@ MASTERCONFDIR = $(SRCROOT)/config
+ DOCONFDEPS = $(addprefix $(MASTERCONFDIR)/, MASTER MASTER.$(DOCONF_ARCH_CONFIG_LC)) \
+ 	$(addprefix $(SOURCE)/, Makefile.template Makefile.$(DOCONF_ARCH_CONFIG_LC) files files.$(DOCONF_ARCH_CONFIG_LC))
+ 
++# HakiOS: the drivers' choice (tools/hakios-config.py kernel); a new choice makes the configuration again
++DOCONFDEPS += $(wildcard $(MASTERCONFDIR)/MASTER.hakios)
++
+ ifneq (,$(wildcard $(MASTERCONFDIR)/MASTER.$(DOCONF_ARCH_CONFIG_LC).$(CURRENT_MACHINE_CONFIG_LC)))
+ DOCONFDEPS += $(MASTERCONFDIR)/MASTER.$(DOCONF_ARCH_CONFIG_LC).$(CURRENT_MACHINE_CONFIG_LC)
+ endif
