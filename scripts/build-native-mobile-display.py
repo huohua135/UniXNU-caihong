@@ -131,7 +131,7 @@ def make_candidate(cache):
     if CANDIDATE.is_file():
         CANDIDATE.unlink()
     command = [sys.executable, EMIT, '--kernel', KERNEL, '--prelinked', cache,
-               '--slide', SLIDE, '--output', CANDIDATE]
+               f'--slide={SLIDE}', '--output', CANDIDATE]
     for root in ROOTS:
         command += ['--root', root]
     print('display: prelink candidate')
