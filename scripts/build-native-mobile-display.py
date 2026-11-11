@@ -15,6 +15,7 @@ Producing it needs two things an ordinary archive builder does not have:
 
 Runs as an archive builder (cwd is the build tree, before the final link).
 """
+import shutil
 import hashlib
 import json
 import os
@@ -220,9 +221,17 @@ def build_archive():
     run(['xcrun', 'clang', '-target', 'arm64-apple-ios17.0', '-isysroot', sdk, '-Werror',
          '-c', asm, '-o', OUT / 'original-bindings.o'])
 
-    llvm = pathlib.Path(run(['brew', '--prefix', 'llvm'], text=True).strip()) / 'bin'
+    # Linux hosts have no Homebrew: use whatever llvm-objcopy the active toolchain
+    # provides (the UniXNU Linux toolchain keeps one in its llvm/bin), and only fall
+    # back to Homebrew when nothing is on PATH.
+    llvm_objcopy = shutil.which('llvm-objcopy')
+    if llvm_objcopy:
+        objcopy = pathlib.Path(llvm_objcopy)
+    else:
+        llvm = pathlib.Path(run(['brew', '--prefix', 'llvm'], text=True).strip()) / 'bin'
+        objcopy = llvm / 'llvm-objcopy'
     late = OUT / 'NativeMobileDisplay.late.o'
-    run([llvm / 'llvm-objcopy', '--remove-section=__DATA,__mod_init_func',
+    run([objcopy, '--remove-section=__DATA,__mod_init_func',
          '--globalize-symbol=__GLOBAL__sub_I_NativeMobileDisplay.cpp', obj, late])
 
     probe = compile_probe()
