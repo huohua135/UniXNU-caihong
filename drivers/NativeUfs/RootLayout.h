@@ -104,7 +104,10 @@ static bool findRootLayout (RootLayout *layout, const char **why)
     *why = "GPT entries CRC";
     return false;
   }
-  static const char wanted[] = "userdata";
+  // caihong dual-system: this tablet keeps Android in its own "userdata" partition,
+// so the root windows (and the console log ring) live in the dedicated "unixnu"
+// partition instead. The geometry comes from the same GPT lookup.
+static const char wanted[] = "unixnu";
   bool found = false;
   for (uint32_t index = 0; index < count; index++) {
     const uint8_t *entry = gScratch + index * 128;
