@@ -609,6 +609,14 @@ FindEmbedded (
 #define DUMP_ROUNDS      6
 #define DUMP_INTERVAL_US (10 * 1000 * 1000)
 
+//
+// The unixnu window of this tablet's GPT (live partition table, 4 KiB LBA):
+// first_lba 90,231,552, 33,554,432 sectors. Addressed absolutely because the
+// partition handles do not exist yet when the first block device appears.
+//
+#define UNIXNU_OFFSET_BYTES (369588609024ull)
+#define UNIXNU_SIZE_BYTES   (137438953472ull)
+
 STATIC
 EFI_STATUS
 FindUnixnuPartition (
@@ -633,17 +641,19 @@ FindUnixnuPartition (
       continue;
     }
 
-    if ((Io->Media == NULL) || !Io->Media->LogicalPartition || Io->Media->ReadOnly) {
+    if ((Io->Media == NULL) || Io->Media->LogicalPartition || Io->Media->ReadOnly) {
       continue;
     }
 
     //
-    // The GPT name is not part of the device path in this tree, so the
-    // partition is recognised by its exact geometry: unixnu is 33,554,432
-    // 4 KiB sectors (128.00 GiB) on this tablet and nothing else is.
+    // This runs as soon as the first block device exists, which on this board
+    // is the whole UFS device: the partition handles appear later, once
+    // PartitionDxe has read the GPT. Take the whole disk and address the
+    // unixnu window by absolute LBA instead. The tablet's UFS is 512 GB, so a
+    // device of at least 400 GiB is the disk and not a RAM volume.
     //
     Bytes = (UINT64)(Io->Media->LastBlock + 1) * Io->Media->BlockSize;
-    if ((Bytes > (137438953472ull - (1ull << 20))) && (Bytes < (137438953472ull + (1ull << 20)))) {
+    if (Bytes >= (400ull * 1024 * 1024 * 1024)) {
       *BlockIo = Io;
       FreePool (Handles);
       return EFI_SUCCESS;
@@ -669,6 +679,8 @@ DumpConsole (
   UINTN                         Total;
   UINTN                         BlockSize;
   UINTN                         Blocks;
+  UINT64                        Start;
+  UINT64                        End;
   EFI_LBA                       Lba;
   UINT8                         *Image;
   UINT32                        *Header;
@@ -727,13 +739,18 @@ DumpConsole (
 
   BlockSize = Io->Media->BlockSize;
   Blocks    = (Total + BlockSize - 1) / BlockSize;
-  if ((UINT64)Blocks > Io->Media->LastBlock + 1) {
+  End       = UNIXNU_OFFSET_BYTES + UNIXNU_SIZE_BYTES;
+  Start     = End - (UINT64)Blocks * BlockSize;
+  if ((Start > End) ||
+      ((Start % BlockSize) != 0) ||
+      (End > (UINT64)(Io->Media->LastBlock + 1) * BlockSize))
+  {
     FreePool (Image);
-    Mark (255, 64, 64);          // salmon: partition smaller than the dump
+    Mark (255, 64, 64);          // salmon: the unixnu window is outside the disk
     return EFI_VOLUME_FULL;
   }
 
-  Lba    = Io->Media->LastBlock + 1 - Blocks;
+  Lba    = Start / BlockSize;
   Status = Io->WriteBlocks (Io, Io->Media->MediaId, Lba, (UINTN)Blocks * BlockSize, Image);
   FreePool (Image);
 
