@@ -1,45 +1,35 @@
 # Kernel configuration for caihong (OnePlus Pad Pro, SM8650) targeting the
 # iPadOS 26.5.2 (23F84) profile — arch arm64e.
 #
-# Derived from configs/caihong_defconfig (hardware: UFS, ARMCPU, DT platform,
-# mobile display, Adreno) with the 26-profile requirements added:
-#   - CRYPTO_BOOTSTRAP "source": xnu-12377 no longer ships the prelinked
-#     corecrypto inputs the 17 profile used.
-#   - KERNEL_CHAINED_FIXUPS: the 23F84 kernelcache is chained, the prelink
-#     step needs the chain-aware relocation path.
-# The owner-root / verified-root path stays off for the first entry: the
-# bring-up patch accepts an unsealed root, exactly like the 17.7.11 port.
-# Flip CONFIG_XNU_SOURCE_STORAGE / CONFIG_XNU_OWNER_ROOT_* once the kernel
-# reaches launchd and the APFS root is served through the UFS windows.
+# Deliberately mirrors the reference 26-profile configuration of the official
+# device (sheng_ipados26_defconfig) plus the minimum caihong hardware platform:
+# ARM device tree, ARM CPU, arch timer, PAN, native UFS. The 17-profile extras
+# (source corecrypto, source libpthread, mobile display, Adreno) are left out
+# for the first 26 attempt: their archives reference symbols the 26 prelink
+# closure does not provide, and the link failed on exactly those
+# (_corecrypto_kext_start, _native_mobile_display_provider_probe).
 
-CONFIG_XNU_SOURCE_CORECRYPTO14=y
-CONFIG_XNU_SOURCE_PTHREAD=y
+CONFIG_XNU_BUILD_ARCHIVES=y
+CONFIG_XNU_CRYPTO_BOOTSTRAP="source"
+CONFIG_XNU_DT_PANIC_REGION=y
+CONFIG_XNU_ARMVIRT_PLATFORM=n
+CONFIG_XNU_KERNEL_CHAINED_FIXUPS=y
+
+# Owner-verified UFS windows from the source storage archive authorize the root.
+CONFIG_XNU_SOURCE_STORAGE=y
+CONFIG_XNU_OWNER_ROOT_AUDIT=y
+CONFIG_XNU_OWNER_ROOT_TRUST=y
+
+# caihong hardware platform
 CONFIG_XNU_ARM_DT_PLATFORM=y
 CONFIG_XNU_ARMCPU=y
 CONFIG_XNU_NATIVE_ARCH_TIMER=y
 CONFIG_XNU_NATIVE_PAN=y
-CONFIG_XNU_DT_PANIC_REGION=y
-CONFIG_XNU_SOURCE_MOCKFS=n
-CONFIG_XNU_TRUST_CACHE_RUNTIME=y
-CONFIG_XNU_NATIVE_CS_HASH_CACHE=y
-CONFIG_XNU_KERNEL_CHAINED_FIXUPS=y
-CONFIG_XNU_CRYPTO_BOOTSTRAP="source"
-CONFIG_XNU_ARMVIRT_PLATFORM=n
 CONFIG_XNU_NATIVE_UFS=y
-CONFIG_XNU_NATIVE_AES=n
 CONFIG_XNU_NATIVE_VIRTIO_BLOCK=n
 CONFIG_XNU_NATIVE_RAM_BLOCK=n
-CONFIG_XNU_BOOT_PROGRESS=n
-CONFIG_XNU_BUILD_ARCHIVES=y
 CONFIG_XNU_NATIVE_LEGACY_DISPLAY=n
-CONFIG_XNU_NATIVE_MOBILE_DISPLAY=y
-CONFIG_XNU_NATIVE_ADRENO=y
+CONFIG_XNU_NATIVE_MOBILE_DISPLAY=n
+CONFIG_XNU_NATIVE_ADRENO=n
 CONFIG_XNU_SHENG_PMGR=n
 CONFIG_XNU_VERIFIED_ROOT_PROBE=n
-CONFIG_XNU_OWNER_ROOT_AUDIT=n
-CONFIG_XNU_OWNER_ROOT_TRUST=n
-CONFIG_XNU_OWNER_CACHE_MOUNT=n
-CONFIG_XNU_OWNER_CACHE_STARTUP=n
-CONFIG_XNU_OWNER_BOOT_MANIFEST=n
-CONFIG_XNU_OWNER_DATA_MOUNT=n
-CONFIG_XNU_OWNER_UNION_SYSTEMOS=n
