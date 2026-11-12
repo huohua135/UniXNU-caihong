@@ -112,6 +112,9 @@ dsc = "Platforms/OnePlus/caihongPkg/caihong.dsc"
 fd = "Build/caihongPkg/{target}_CLANGPDB/FV/SILICIUM_UEFI.fd"
 packages = [
   "{uefi}",
+  "{uefi}/Common/Mu_OEM_Sample",
+  "{uefi}/Common/Mu",
+  "{uefi}/Platforms/OnePlus",
   "{uefi}/Silicon/Silicium",
   "{uefi}/Silicon/Qualcomm",
   "{tree}/package",
