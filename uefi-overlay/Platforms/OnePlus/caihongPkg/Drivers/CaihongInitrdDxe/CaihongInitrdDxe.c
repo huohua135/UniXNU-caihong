@@ -626,8 +626,8 @@ FindUnixnuPartition (
   }
 
   for (Index = 0; Index < Count; Index++) {
-    EFI_BLOCK_IO_PROTOCOL     *Io;
-    EFI_DEVICE_PATH_PROTOCOL  *Node;
+    EFI_BLOCK_IO_PROTOCOL  *Io;
+    UINT64                 Bytes;
 
     if (EFI_ERROR (gBS->HandleProtocol (Handles[Index], &gEfiBlockIoProtocolGuid, (VOID **)&Io))) {
       continue;
@@ -637,27 +637,16 @@ FindUnixnuPartition (
       continue;
     }
 
-    if (EFI_ERROR (gBS->HandleProtocol (Handles[Index], &gEfiDevicePathProtocolGuid, (VOID **)&Node))) {
-      continue;
-    }
-
-    for ( ; !IsDevicePathEnd (Node); Node = NextDevicePathNode (Node)) {
-      HARDDRIVE_DEVICE_PATH  *Drive;
-
-      if ((DevicePathType (Node) != MEDIA_DEVICE_PATH) || (DevicePathSubType (Node) != MEDIA_HARDDISK_DP)) {
-        continue;
-      }
-
-      Drive = (HARDDRIVE_DEVICE_PATH *)Node;
-      if ((Drive->PartitionName[0] == L'u') && (Drive->PartitionName[1] == L'n') &&
-          (Drive->PartitionName[2] == L'i') && (Drive->PartitionName[3] == L'x') &&
-          (Drive->PartitionName[4] == L'n') && (Drive->PartitionName[5] == L'u') &&
-          (Drive->PartitionName[6] == L'\0'))
-      {
-        *BlockIo = Io;
-        FreePool (Handles);
-        return EFI_SUCCESS;
-      }
+    //
+    // The GPT name is not part of the device path in this tree, so the
+    // partition is recognised by its exact geometry: unixnu is 33,554,432
+    // 4 KiB sectors (128.00 GiB) on this tablet and nothing else is.
+    //
+    Bytes = (UINT64)(Io->Media->LastBlock + 1) * Io->Media->BlockSize;
+    if ((Bytes > (137438953472ull - (1ull << 20))) && (Bytes < (137438953472ull + (1ull << 20)))) {
+      *BlockIo = Io;
+      FreePool (Handles);
+      return EFI_SUCCESS;
     }
   }
 
