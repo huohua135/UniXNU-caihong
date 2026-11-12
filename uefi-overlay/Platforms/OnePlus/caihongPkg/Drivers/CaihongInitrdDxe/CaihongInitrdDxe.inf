@@ -24,6 +24,7 @@
   BaseLib
   BaseMemoryLib
   DebugLib
+  DevicePathLib
   FdtLib
   HobLib
   MemoryAllocationLib
@@ -37,6 +38,7 @@
   gEfiBlockIoProtocolGuid
   gEfiDevicePathProtocolGuid
   gEfiFirmwareVolume2ProtocolGuid
+  gEfiGraphicsOutputProtocolGuid
 
 [Depex]
   TRUE
