@@ -98,7 +98,12 @@ READ_LOCK_STATUS   = TRUE
   #INF RuleOverride = ACPITABLE caihong/AcpiTables.inf
 
   # UniXNU boot manager and the Darwin loader
-  INF caihongPkg/Drivers/CaihongInitrdDxe/CaihongInitrdDxe.inf
+  # Bisect 2026-11-12: the 10-22 firmware volume (no Initrd driver, no
+  # DarwinBoot) reset back to Android after ~30 s, while every volume that
+  # carries both hangs with no USB and a dark panel. Drop the Initrd driver
+  # from this build to see whether it is the one that wedges DXE; restore it
+  # by removing the '#' below.
+  #INF caihongPkg/Drivers/CaihongInitrdDxe/CaihongInitrdDxe.inf
   INF UniXNUPkg/Application/UniXNU/UniXNU.inf
   INF UniXNUPkg/Driver/UniXNUDxe/UniXNUDxe.inf
   INF DarwinBootPkg/Driver/DarwinBoot.inf
