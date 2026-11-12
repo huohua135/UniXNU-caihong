@@ -27,6 +27,7 @@
 #include <Library/HobLib.h>
 #include <Library/MemoryAllocationLib.h>
 #include <Library/UefiBootServicesTableLib.h>
+#include <Library/UefiRuntimeServicesTableLib.h>
 #include <Protocol/BlockIo.h>
 #include <Protocol/DevicePath.h>
 #include <Protocol/FirmwareVolume2.h>
@@ -765,7 +766,9 @@ DumpConsole (
 //
 // Hold the boot for a minute, dumping the console every ten seconds: the last
 // completed dump is what the host reads back, so a fault anywhere in this
-// window still leaves the log that led to it.
+// window still leaves the log that led to it. The firmware then resets the
+// board itself: a boot that only ends in Qualcomm crash-dump mode (900E) costs
+// a long press of the power button, which no automated run can do.
 //
 STATIC
 VOID
@@ -779,6 +782,10 @@ DumpConsoleAndHold (
     DumpConsole ();
     gBS->Stall (DUMP_INTERVAL_US);
   }
+
+  DumpConsole ();
+  gRT->ResetSystem (EfiResetCold, EFI_SUCCESS, 0, NULL);
+  CpuDeadLoop ();
 }
 
 EFI_STATUS
