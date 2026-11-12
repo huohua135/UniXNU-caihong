@@ -617,6 +617,15 @@ CaihongInitrdDxeEntry (
   UINT64                 Dtb;
   EFI_STATUS             Status;
 
+  //
+  // Bring-up brake: the panel shows the DEBUG log of the drivers dispatched
+  // before this one, and the board drops into Qualcomm crash-dump mode (900E)
+  // a few seconds after the first fault, so the log is otherwise unreadable.
+  // Green bar plus a one-minute hold gives a photo of the last lines.
+  //
+  Mark (0, 255, 0);
+  gBS->Stall (60 * 1000 * 1000);
+
   Status = gBS->GetMemoryMap (&Size, NULL, &Key, &DescriptorSize, &Version);
   if (Status != EFI_BUFFER_TOO_SMALL) {
     return Status;
