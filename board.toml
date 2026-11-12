@@ -51,16 +51,18 @@ windows = [
 ]
 
 [kernel]
-defconfig = "caihong_ipados26_defconfig"    # [26] arm64e；需从 sheng_ipados26_defconfig 派生
+defconfig = "caihong_ipados26_defconfig"    # [26] arm64e
+# [26] first link: only the archives the kernel actually links. The display,
+# UFS/source-storage and PMGR archives are absent on purpose — each needs a 26
+# profile input this port does not have yet, and build-native-mobile-display.py
+# additionally refuses to run before a kernel image exists, which the bootstrap
+# pass of a fresh tree cannot provide (run 43134665913 stopped exactly there).
 archives = [
   "build-corecrypto-14.py",
   "build-corecrypto-14.py --namespace",
   "build-arm-driver.py ArmDTPlatform",
   "build-arm-driver.py ArmCpu",
-  "build-libpthread-kernel.py",
   "build-arm-driver.py CaihongPmgrNub",
-  "build-native-mobile-display.py",
-  "build-sheng-ufs.py",
 ]
 
 [kernel.prelink]
