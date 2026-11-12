@@ -604,6 +604,7 @@ FindEmbedded (
 //
 STATIC UINT8      mStageColour[3];
 STATIC EFI_EVENT  mStageTimer;
+STATIC EFI_EVENT  mStageGopEvent;
 
 STATIC
 VOID
@@ -643,7 +644,7 @@ SetStage (
 
 STATIC
 VOID
-ArmStageBar (
+ArmStageTimer (
   VOID
   )
 {
@@ -656,7 +657,47 @@ ArmStageBar (
     return;
   }
 
-  gBS->SetTimer (mStageTimer, TimerPeriodic, 500 * 1000);
+  if (EFI_ERROR (gBS->SetTimer (mStageTimer, TimerPeriodic, 500 * 1000))) {
+    mStageTimer = NULL;
+  }
+}
+
+//
+// This driver is dispatched before the graphics console exists (the bar must
+// survive the boot logo and the console clear), so the timer is started only
+// once the GOP protocol shows up. RegisterProtocolNotify is the only way to
+// learn that without blocking the dispatch.
+//
+STATIC
+VOID
+EFIAPI
+OnGopInstalled (
+  IN EFI_EVENT  Event,
+  IN VOID       *Context
+  )
+{
+  ArmStageTimer ();
+  StagePaint (NULL, NULL);
+}
+
+STATIC
+VOID
+ArmStageBar (
+  VOID
+  )
+{
+  VOID  *Registration;
+
+  if (mStageGopEvent != NULL) {
+    return;
+  }
+
+  if (EFI_ERROR (gBS->CreateEvent (EVT_NOTIFY_SIGNAL, TPL_CALLBACK, OnGopInstalled, NULL, &mStageGopEvent))) {
+    mStageGopEvent = NULL;
+    return;
+  }
+
+  gBS->RegisterProtocolNotify (&gEfiGraphicsOutputProtocolGuid, mStageGopEvent, &Registration);
 }
 
 EFI_STATUS
