@@ -111,6 +111,7 @@ dsc = "Platforms/OnePlus/caihongPkg/caihong.dsc"
 fd = "Build/caihongPkg/{target}_CLANGPDB/FV/SILICIUM_UEFI.fd"
 packages = [
   "{uefi}",
+  "{uefi}/Silicon/Qualcomm",
   "{tree}/package",
   "{tree}/drivers/DarwinBoot",
   "{edk2}",
