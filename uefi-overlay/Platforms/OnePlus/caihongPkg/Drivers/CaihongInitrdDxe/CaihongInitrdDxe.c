@@ -592,6 +592,73 @@ FindEmbedded (
   return EFI_NOT_FOUND;
 }
 
+//
+// Bring-up stage bar.
+//
+// The panel is the only channel that survives this firmware: there is no USB
+// serial, the UFS driver in this volume is built for another SoC (no BlockIo
+// appears) and the board drops into Qualcomm crash-dump mode about twenty
+// seconds after the handoff. A periodic timer repaints a bar in the top left
+// corner, so the colour still on the panel at the end names the last step this
+// driver reached, even if a console clear or the boot logo painted over it.
+//
+STATIC UINT8      mStageColour[3];
+STATIC EFI_EVENT  mStageTimer;
+
+STATIC
+VOID
+EFIAPI
+StagePaint (
+  IN EFI_EVENT  Event,
+  IN VOID       *Context
+  )
+{
+  EFI_GRAPHICS_OUTPUT_PROTOCOL   *Gop;
+  EFI_GRAPHICS_OUTPUT_BLT_PIXEL  Pixel;
+
+  if (EFI_ERROR (gBS->LocateProtocol (&gEfiGraphicsOutputProtocolGuid, NULL, (VOID **)&Gop))) {
+    return;
+  }
+
+  Pixel.Red      = mStageColour[0];
+  Pixel.Green    = mStageColour[1];
+  Pixel.Blue     = mStageColour[2];
+  Pixel.Reserved = 0;
+  Gop->Blt (Gop, &Pixel, EfiBltVideoFill, 0, 0, 0, 0, 600, 100, 0);
+}
+
+STATIC
+VOID
+SetStage (
+  IN UINT8  Red,
+  IN UINT8  Green,
+  IN UINT8  Blue
+  )
+{
+  mStageColour[0] = Red;
+  mStageColour[1] = Green;
+  mStageColour[2] = Blue;
+  StagePaint (NULL, NULL);
+}
+
+STATIC
+VOID
+ArmStageBar (
+  VOID
+  )
+{
+  if (mStageTimer != NULL) {
+    return;
+  }
+
+  if (EFI_ERROR (gBS->CreateEvent (EVT_TIMER, TPL_CALLBACK, StagePaint, NULL, &mStageTimer))) {
+    mStageTimer = NULL;
+    return;
+  }
+
+  gBS->SetTimer (mStageTimer, TimerPeriodic, 500 * 1000);
+}
+
 EFI_STATUS
 EFIAPI
 CaihongInitrdDxeEntry (
@@ -617,23 +684,34 @@ CaihongInitrdDxeEntry (
   UINT64                 Dtb;
   EFI_STATUS             Status;
 
+  //
+  // Stage bar: blue = this driver was dispatched at all, then one colour per
+  // step, red on any terminal failure, magenta when the volume is installed.
+  //
+  ArmStageBar ();
+  SetStage (0, 0, 255);
+
   Status = gBS->GetMemoryMap (&Size, NULL, &Key, &DescriptorSize, &Version);
   if (Status != EFI_BUFFER_TOO_SMALL) {
+    SetStage (255, 0, 0);
     return Status;
   }
 
   Size += 8 * DescriptorSize;
   Map   = AllocatePool (Size);
   if (Map == NULL) {
+    SetStage (255, 0, 0);
     return EFI_OUT_OF_RESOURCES;
   }
 
   Status = gBS->GetMemoryMap (&Size, Map, &Key, &DescriptorSize, &Version);
   if (EFI_ERROR (Status)) {
     FreePool (Map);
+    SetStage (255, 0, 0);
     return Status;
   }
 
+  SetStage (0, 255, 255);
   Mark (0, 0, 255);
 
   //
@@ -643,18 +721,24 @@ CaihongInitrdDxeEntry (
   Hob = GetFirstGuidHob (&gSiliciumEntryArgHobGuid);
   if ((Hob == NULL) || (GET_GUID_HOB_DATA_SIZE (Hob) < sizeof (UINT64))) {
     Mark (128, 0, 128);   // purple: no entry argument HOB
+    SetStage (255, 0, 0);
   } else {
     Dtb = ReadUnaligned64 ((CONST UINT64 *)GET_GUID_HOB_DATA (Hob));
     ShowValue (Dtb, 140);
     if (Dtb == 0) {
       Mark (255, 0, 255);        // magenta: x0 was zero
+      SetStage (255, 0, 0);
     } else if ((Dtb & 7) != 0) {
       Mark (255, 105, 180);      // pink: x0 is not 8-byte aligned
+      SetStage (255, 0, 0);
     } else if (!RangeIsBacked (Map, Size, DescriptorSize, Dtb, 64)) {
       Mark (128, 128, 128);      // grey: x0 points outside backed memory
+      SetStage (255, 0, 0);
     } else if (!IsFdt ((CONST UINT8 *)(UINTN)Dtb)) {
       Mark (0, 0, 128);          // navy: memory is readable but not an FDT
+      SetStage (255, 0, 0);
     } else {
+      SetStage (255, 255, 255);  // white: x0 is a valid device tree
       Fdt       = (CONST VOID *)(UINTN)Dtb;
       TotalSize = SwapBytes32 (ReadUnaligned32 ((CONST UINT32 *)((CONST UINT8 *)Fdt + FDT_TOTALSIZE)));
       ShowValue (TotalSize, 260);
@@ -662,10 +746,13 @@ CaihongInitrdDxeEntry (
       Chosen    = -1;
       if ((TotalSize < 64) || (TotalSize > FDT_MAX_SIZE)) {
         Mark (255, 128, 0);        // orange: implausible totalsize
+        SetStage (255, 0, 0);
       } else if (!RangeIsBacked (Map, Size, DescriptorSize, Dtb, TotalSize)) {
         Mark (128, 128, 128);      // grey: the tree runs past backed memory
+        SetStage (255, 0, 0);
       } else if ((Chosen = FdtPathOffset (Fdt, "/chosen")) < 0) {
         Mark (0, 255, 255);        // cyan: valid tree without /chosen
+        SetStage (255, 0, 0);
       } else {
         StartProp = FdtGetProp (Fdt, Chosen, "linux,initrd-start", &StartLength);
         EndProp   = FdtGetProp (Fdt, Chosen, "linux,initrd-end", &EndLength);
@@ -674,14 +761,18 @@ CaihongInitrdDxeEntry (
             ((EndLength != 4) && (EndLength != 8)))
         {
           Mark (255, 255, 0); // yellow: /chosen without an initrd range
+          SetStage (255, 0, 0);
         } else {
+          SetStage (255, 255, 0);   // yellow: the device tree names the initrd
           Start = ReadAddress (StartProp, StartLength);
           End   = ReadAddress (EndProp, EndLength);
           ShowValue (Start, 500);
           ShowValue (End, 620);
           if (End <= Start) {
             Mark (255, 255, 255); // white: the range is empty or inverted
+            SetStage (255, 0, 0);
           } else {
+            SetStage (0, 255, 0);   // green: scanning the range
             ShowValue (End - Start, 740);
             if (RangeIsBacked (Map, Size, DescriptorSize, Start, RAM_BLOCK_SIZE)) {
               ShowValue (*(CONST UINT64 *)(UINTN)Start, 860);
@@ -690,10 +781,12 @@ CaihongInitrdDxeEntry (
             Mark (0, 255, 0);  // green: looking for the volume
             if (!EFI_ERROR (FindVolume (Start, End))) {
               Mark (0, 255, 0);  // green: volume successfully installed!
+              SetStage (255, 0, 255);  // magenta: payload published
               FreePool (Map);
               return EFI_SUCCESS;
             }
             Mark (255, 0, 0);  // red: no CAIHONGESP volume inside the range
+            SetStage (255, 0, 0);
           }
         }
       }
