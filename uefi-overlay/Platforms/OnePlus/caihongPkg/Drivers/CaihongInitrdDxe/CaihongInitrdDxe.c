@@ -504,7 +504,15 @@ ScanMemory (
       }
 
       for (Address = ALIGN_VALUE (Start, Steps[Step]); Address + RAM_BLOCK_SIZE <= End; Address += Steps[Step]) {
-        Bytes = VolumeSizeAt ((UINT8 *)(UINTN)Address, End - Address);
+        //
+        // Only the first candidate of a region carries the diagnostic marks; the
+        // coarse steps would otherwise paint them over unrelated memory.
+        //
+        Bytes = VolumeSizeAt (
+                  (UINT8 *)(UINTN)Address,
+                  End - Address,
+                  (BOOLEAN)(Address == ALIGN_VALUE (Start, Steps[Step]))
+                  );
         if (Bytes != 0) {
           return InstallVolume (Address, Bytes);
         }
@@ -566,7 +574,10 @@ FindEmbedded (
       continue;
     }
 
-    Bytes = VolumeSizeAt ((UINT8 *)Buffer, BufferSize);
+    //
+    // A single embedded candidate: it is the one that carries the marks.
+    //
+    Bytes = VolumeSizeAt ((UINT8 *)Buffer, BufferSize, TRUE);
     if (Bytes == 0) {
       FreePool (Buffer);
       continue;
