@@ -764,6 +764,46 @@ DumpConsole (
 }
 
 //
+// Bring-up watchdog.
+//
+// ABL arms a hardware watchdog before it jumps into the shim; a boot that is
+// still inside UEFI about twenty seconds later is killed and the board comes up
+// in Qualcomm crash-dump mode (900E), which only a long press of the power
+// button leaves. A timer event fires just before that and resets the board
+// cleanly instead: if the boot reaches the OS, ExitBootServices cancels it.
+//
+#define BRINGUP_RESET_US (18 * 1000 * 1000)
+
+STATIC
+VOID
+EFIAPI
+BringupReset (
+  IN EFI_EVENT  Event,
+  IN VOID       *Context
+  )
+{
+  gRT->ResetSystem (EfiResetCold, EFI_SUCCESS, 0, NULL);
+  CpuDeadLoop ();
+}
+
+STATIC
+EFI_STATUS
+ArmBringupReset (
+  VOID
+  )
+{
+  EFI_EVENT   Event;
+  EFI_STATUS  Status;
+
+  Status = gBS->CreateEvent (EVT_TIMER, TPL_CALLBACK, BringupReset, NULL, &Event);
+  if (EFI_ERROR (Status)) {
+    return Status;
+  }
+
+  return gBS->SetTimer (Event, TimerRelative, BRINGUP_RESET_US);
+}
+
+//
 // Hold the boot for a minute, dumping the console every ten seconds: the last
 // completed dump is what the host reads back, so a fault anywhere in this
 // window still leaves the log that led to it. The firmware then resets the
@@ -814,11 +854,12 @@ CaihongInitrdDxeEntry (
   EFI_STATUS             Status;
 
   //
-  // Bring-up log channel: hold the boot for a minute while dumping the
-  // graphics console to the tail of the unixnu partition, so the host can read
-  // the last frame back instead of photographing a screen that goes dark.
+  // A boot that does not reach the OS within the ABL watchdog window ends in
+  // 900E and needs a long press; arm the clean reset first. The console dump
+  // needs a block device, which this driver may be dispatched before, so it
+  // stays behind its own build for now.
   //
-  DumpConsoleAndHold ();
+  ArmBringupReset ();
 
   Status = gBS->GetMemoryMap (&Size, NULL, &Key, &DescriptorSize, &Version);
   if (Status != EFI_BUFFER_TOO_SMALL) {
