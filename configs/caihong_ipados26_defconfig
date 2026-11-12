@@ -20,7 +20,14 @@
 CONFIG_XNU_SOURCE_CORECRYPTO14=y
 CONFIG_XNU_CRYPTO_BOOTSTRAP="source"
 CONFIG_XNU_BUILD_ARCHIVES=y
-CONFIG_XNU_KERNEL_CHAINED_FIXUPS=y
+# Run 43164890318 linked a kernel with chained fixups, and emit_prelink then
+# stopped at fileset_layout.split_references: "Native image has no split-segment
+# relocation information". The 12377 tree carries arm64e-threaded-starts.patch
+# for exactly that combination; this profile's series does not apply it, so the
+# linker never emits the records. Build the classic layout instead — the same
+# path the 17.7.11 kernel took — and revisit chained fixups once the kext merge
+# is the next problem rather than the first one.
+CONFIG_XNU_KERNEL_CHAINED_FIXUPS=n
 CONFIG_XNU_DT_PANIC_REGION=y
 
 # caihong hardware platform
