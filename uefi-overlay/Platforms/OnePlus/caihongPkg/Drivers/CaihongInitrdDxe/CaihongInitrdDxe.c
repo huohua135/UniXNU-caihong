@@ -22,6 +22,7 @@
 #include <Library/BaseLib.h>
 #include <Library/BaseMemoryLib.h>
 #include <Library/DebugLib.h>
+#include <Library/DevicePathLib.h>
 #include <Library/FdtLib.h>
 #include <Library/HobLib.h>
 #include <Library/MemoryAllocationLib.h>
@@ -592,6 +593,188 @@ FindEmbedded (
   return EFI_NOT_FOUND;
 }
 
+//
+// Bring-up log channel.
+//
+// The firmware has nowhere to print that the host can read: no UART, the USB
+// stack is not up before the first fault, and the panel loses its content when
+// the SoC drops into Qualcomm crash-dump mode a few seconds after a fault.
+// Dump the graphics console to the tail of the unixnu partition instead (it is
+// all zero and belongs to this port), so the host can read the last frame back
+// with a plain dd from Android and look at what the console said.
+//
+#define DUMP_MAGIC       "CHDUMP01"
+#define DUMP_HEADER_SIZE 4096
+#define DUMP_TAIL_BYTES  (32ull * 1024 * 1024)
+#define DUMP_ROUNDS      6
+#define DUMP_INTERVAL_US (10 * 1000 * 1000)
+
+STATIC
+EFI_STATUS
+FindUnixnuPartition (
+  OUT EFI_BLOCK_IO_PROTOCOL  **BlockIo
+  )
+{
+  EFI_HANDLE  *Handles;
+  UINTN       Count;
+  UINTN       Index;
+  EFI_STATUS  Status;
+
+  Status = gBS->LocateHandleBuffer (ByProtocol, &gEfiBlockIoProtocolGuid, NULL, &Count, &Handles);
+  if (EFI_ERROR (Status)) {
+    return Status;
+  }
+
+  for (Index = 0; Index < Count; Index++) {
+    EFI_BLOCK_IO_PROTOCOL     *Io;
+    EFI_DEVICE_PATH_PROTOCOL  *Node;
+
+    if (EFI_ERROR (gBS->HandleProtocol (Handles[Index], &gEfiBlockIoProtocolGuid, (VOID **)&Io))) {
+      continue;
+    }
+
+    if ((Io->Media == NULL) || !Io->Media->LogicalPartition || Io->Media->ReadOnly) {
+      continue;
+    }
+
+    if (EFI_ERROR (gBS->HandleProtocol (Handles[Index], &gEfiDevicePathProtocolGuid, (VOID **)&Node))) {
+      continue;
+    }
+
+    for ( ; !IsDevicePathEnd (Node); Node = NextDevicePathNode (Node)) {
+      HARDDRIVE_DEVICE_PATH  *Drive;
+
+      if ((DevicePathType (Node) != MEDIA_DEVICE_PATH) || (DevicePathSubType (Node) != MEDIA_HARDDISK_DP)) {
+        continue;
+      }
+
+      Drive = (HARDDRIVE_DEVICE_PATH *)Node;
+      if ((Drive->PartitionName[0] == L'u') && (Drive->PartitionName[1] == L'n') &&
+          (Drive->PartitionName[2] == L'i') && (Drive->PartitionName[3] == L'x') &&
+          (Drive->PartitionName[4] == L'n') && (Drive->PartitionName[5] == L'u') &&
+          (Drive->PartitionName[6] == L'\0'))
+      {
+        *BlockIo = Io;
+        FreePool (Handles);
+        return EFI_SUCCESS;
+      }
+    }
+  }
+
+  FreePool (Handles);
+  return EFI_NOT_FOUND;
+}
+
+STATIC
+EFI_STATUS
+DumpConsole (
+  VOID
+  )
+{
+  EFI_BLOCK_IO_PROTOCOL         *Io;
+  EFI_GRAPHICS_OUTPUT_PROTOCOL  *Gop;
+  EFI_STATUS                    Status;
+  UINTN                         Width;
+  UINTN                         Height;
+  UINTN                         Payload;
+  UINTN                         Total;
+  UINTN                         BlockSize;
+  UINTN                         Blocks;
+  EFI_LBA                       Lba;
+  UINT8                         *Image;
+  UINT32                        *Header;
+
+  Status = FindUnixnuPartition (&Io);
+  if (EFI_ERROR (Status)) {
+    Mark (255, 255, 0);          // yellow: the unixnu partition was not found
+    return Status;
+  }
+
+  Status = gBS->LocateProtocol (&gEfiGraphicsOutputProtocolGuid, NULL, (VOID **)&Gop);
+  if (EFI_ERROR (Status)) {
+    Mark (255, 0, 0);            // red: no graphics console to dump
+    return Status;
+  }
+
+  Width   = Gop->Mode->Info->HorizontalResolution;
+  Height  = Gop->Mode->Info->VerticalResolution;
+  Payload = Width * Height * sizeof (EFI_GRAPHICS_OUTPUT_BLT_PIXEL);
+  Total   = DUMP_HEADER_SIZE + Payload;
+  if ((Width == 0) || (Height == 0) || (Total > DUMP_TAIL_BYTES)) {
+    Mark (255, 128, 0);          // orange: frame does not fit the window
+    return EFI_BAD_BUFFER_SIZE;
+  }
+
+  Image = AllocatePool (Total);
+  if (Image == NULL) {
+    Mark (255, 0, 255);          // magenta: out of pool
+    return EFI_OUT_OF_RESOURCES;
+  }
+
+  ZeroMem (Image, DUMP_HEADER_SIZE);
+  Header = (UINT32 *)Image;
+  CopyMem (Image, DUMP_MAGIC, sizeof (DUMP_MAGIC) - 1);
+  Header[2] = (UINT32)Width;
+  Header[3] = (UINT32)Height;
+  Header[4] = 32;
+
+  Status = Gop->Blt (
+                    Gop,
+                    (EFI_GRAPHICS_OUTPUT_BLT_PIXEL *)(Image + DUMP_HEADER_SIZE),
+                    EfiBltVideoToBltBuffer,
+                    0,
+                    0,
+                    0,
+                    0,
+                    Width,
+                    Height,
+                    0
+                    );
+  if (EFI_ERROR (Status)) {
+    FreePool (Image);
+    Mark (128, 0, 255);          // violet: the frame could not be read
+    return Status;
+  }
+
+  BlockSize = Io->Media->BlockSize;
+  Blocks    = (Total + BlockSize - 1) / BlockSize;
+  if ((UINT64)Blocks > Io->Media->LastBlock + 1) {
+    FreePool (Image);
+    Mark (255, 64, 64);          // salmon: partition smaller than the dump
+    return EFI_VOLUME_FULL;
+  }
+
+  Lba    = Io->Media->LastBlock + 1 - Blocks;
+  Status = Io->WriteBlocks (Io, Io->Media->MediaId, Lba, (UINTN)Blocks * BlockSize, Image);
+  FreePool (Image);
+
+  Mark (0, 0, 255);              // blue: dump written (green means it failed below)
+  if (EFI_ERROR (Status)) {
+    Mark (0, 128, 0);            // green: the write itself failed
+  }
+
+  return Status;
+}
+
+//
+// Hold the boot for a minute, dumping the console every ten seconds: the last
+// completed dump is what the host reads back, so a fault anywhere in this
+// window still leaves the log that led to it.
+//
+STATIC
+VOID
+DumpConsoleAndHold (
+  VOID
+  )
+{
+  UINTN  Round;
+
+  for (Round = 0; Round < DUMP_ROUNDS; Round++) {
+    DumpConsole ();
+    gBS->Stall (DUMP_INTERVAL_US);
+  }
+}
+
 EFI_STATUS
 EFIAPI
 CaihongInitrdDxeEntry (
@@ -618,13 +801,11 @@ CaihongInitrdDxeEntry (
   EFI_STATUS             Status;
 
   //
-  // Bring-up brake: the panel shows the DEBUG log of the drivers dispatched
-  // before this one, and the board drops into Qualcomm crash-dump mode (900E)
-  // a few seconds after the first fault, so the log is otherwise unreadable.
-  // Green bar plus a one-minute hold gives a photo of the last lines.
+  // Bring-up log channel: hold the boot for a minute while dumping the
+  // graphics console to the tail of the unixnu partition, so the host can read
+  // the last frame back instead of photographing a screen that goes dark.
   //
-  Mark (0, 255, 0);
-  gBS->Stall (60 * 1000 * 1000);
+  DumpConsoleAndHold ();
 
   Status = gBS->GetMemoryMap (&Size, NULL, &Key, &DescriptorSize, &Version);
   if (Status != EFI_BUFFER_TOO_SMALL) {
