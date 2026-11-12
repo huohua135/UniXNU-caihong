@@ -30,6 +30,7 @@
   MemoryAllocationLib
   UefiBootServicesTableLib
   UefiDriverEntryPoint
+  UefiRuntimeServicesTableLib
 
 [Guids]
   gSiliciumEntryArgHobGuid
